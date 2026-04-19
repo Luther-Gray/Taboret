@@ -67,5 +67,5 @@ import * as PIXI from "pixi.js";
   // When the mouse leaves the window or when we let go of the click, we stop panning.
   window.addEventListener("mouseup", () => (isPanning = false));
 
-  //---------------------Zooming------------------------
+  //---------------------Zooming-------------------------
 })();

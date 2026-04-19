@@ -1,0 +1,1 @@
+- CachyOS (Niri) - Resizing the window doesn't update the grid.
