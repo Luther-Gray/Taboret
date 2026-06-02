@@ -2,6 +2,13 @@ import * as PIXI from "pixi.js";
 
 (async () => {
   //----------------Flags---------------------
+  // Mouse Tracking - Need mouse coords across the Application layer and the Canvas layer.
+  const mouse = {
+    positionX: 0, // Absolute Position outside of the Canvas - Outer
+    positionX: 0,
+    canvasX: 0, // Position within the Canvas - Inner
+    canvasY: 0,
+  };
   // Panning - Panning is moving the Canvas, not the Viewport. Think like old mario games.
   let isPanning = false;
   let panStart = { x: 0, y: 0 };
@@ -16,6 +23,7 @@ import * as PIXI from "pixi.js";
   let gridColor = "#515151";
   let gridSize = 100;
   let gridThickness = 3;
+  let gridScale = 0;
   //------------------Project Boilerplate-----------------
   // Create and Initalize Taboret. This is boilerplate stuff & a few settings.
   const Taboret = new PIXI.Application();
@@ -37,7 +45,7 @@ import * as PIXI from "pixi.js";
   // Generate a texture with the Grid patterns
   const gridTexture = Taboret.renderer.generateTexture(Grid);
   // Attatch the Grid to a Tiling Sprite and size it to fit the "Viewport"
-  const gridSprite = new PIXI.TilingSprite({
+  var gridSprite = new PIXI.TilingSprite({
     texture: gridTexture,
     width: Taboret.screen.width,
     height: Taboret.screen.height,
@@ -45,6 +53,12 @@ import * as PIXI from "pixi.js";
   // Lay the Sprite onto the "Viewport"
   Taboret.stage.addChild(gridSprite);
   Taboret.stage.addChild(Canvas);
+
+  // Resize Grid Sprite if user adjusts the window size.
+  Taboret.renderer.on("resize", (width, height) => {
+    gridSprite.width = width;
+    gridSprite.height = height;
+  });
   //------------------------Panning---------------------
   // Pan Input - We're "Sticking" the canvas to our mouse and turn isPanning on.
   Taboret.canvas.addEventListener("mousedown", (event) => {
@@ -68,4 +82,11 @@ import * as PIXI from "pixi.js";
   window.addEventListener("mouseup", () => (isPanning = false));
 
   //---------------------Zooming-------------------------
+  Taboret.canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const targetZoom = Math.max(
+      zoomMin,
+      Math.min(zoomMax, zoomScale * (event.deltaY < 0 ? 1.1 : 0.9)),
+    );
+  });
 })();

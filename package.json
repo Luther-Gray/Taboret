@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "npm run dev",
-    "build": "npm run lint && vite build",
+    "start": "pnpm dev",
+    "build": "pnpm lint && vite build",
     "lint": "eslint .",
     "dev": "vite"
   },
