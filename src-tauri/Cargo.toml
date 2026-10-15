@@ -26,4 +26,5 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 ureq = { version = "2.10", features = ["tls"] }
+url = "2"
 base64 = "0.22"

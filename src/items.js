@@ -562,6 +562,39 @@ export class ItemManager {
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
 
+    // Distribute modes: space items evenly between the outermost items
+    if (mode === "distribute-h") {
+      if (boundsList.length < 3) return; // need 3+ to distribute
+      const sorted = [...boundsList].sort((a, b) => a.x - b.x);
+      const totalWidth = sorted.reduce((sum, b) => sum + b.width, 0);
+      const span = maxX - minX;
+      const gap = (span - totalWidth) / (sorted.length - 1);
+      let curX = minX;
+      for (const b of sorted) {
+        this.setItemPosition(b.item, curX + b.width / 2, b.item.y);
+        curX += b.width + gap;
+      }
+      this.updateGroupDisplay();
+      this.notifyChanged();
+      return;
+    }
+
+    if (mode === "distribute-v") {
+      if (boundsList.length < 3) return; // need 3+ to distribute
+      const sorted = [...boundsList].sort((a, b) => a.y - b.y);
+      const totalHeight = sorted.reduce((sum, b) => sum + b.height, 0);
+      const span = maxY - minY;
+      const gap = (span - totalHeight) / (sorted.length - 1);
+      let curY = minY;
+      for (const b of sorted) {
+        this.setItemPosition(b.item, b.item.x, curY + b.height / 2);
+        curY += b.height + gap;
+      }
+      this.updateGroupDisplay();
+      this.notifyChanged();
+      return;
+    }
+
     for (const b of boundsList) {
       const item = b.item;
       switch (mode) {

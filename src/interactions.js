@@ -81,15 +81,22 @@ export class InteractionController {
           } else {
             this.selectItem(clickedItem, false);
           }
+          this.pendingSingleSelect = null;
         } else {
-          // If not already selected, select only this one
+          // If clicked item is not already selected, select only this one
           if (!this.selectedItems.has(clickedItem)) {
             this.clearSelection();
             this.selectItem(clickedItem, false);
+            this.pendingSingleSelect = null;
+          } else {
+            // Already selected as part of a multi-selection:
+            // allow dragging the whole selection, but if clicked without moving, select only this one
+            this.pendingSingleSelect = clickedItem;
           }
         }
 
         // Prepare to drag all selected items
+        this.hasDraggedItems = false;
         this.isDraggingItems = true;
         this.dragStartMouse = { ...canvasPos };
         this.dragStartPositions.clear();
@@ -120,6 +127,9 @@ export class InteractionController {
       if (this.isDraggingItems) {
         const dx = canvasPos.x - this.dragStartMouse.x;
         const dy = canvasPos.y - this.dragStartMouse.y;
+        if (Math.hypot(dx, dy) > 3) {
+          this.hasDraggedItems = true;
+        }
 
         for (const item of this.selectedItems) {
           const start = this.dragStartPositions.get(item.id);
@@ -159,7 +169,14 @@ export class InteractionController {
       }
 
       if (this.isDraggingItems) {
+        // If it was just a click (not dragged) on an item inside a multi-selection, select only that item!
+        if (!this.hasDraggedItems && this.pendingSingleSelect && !e.shiftKey) {
+          this.clearSelection();
+          this.selectItem(this.pendingSingleSelect, false);
+        }
+        this.pendingSingleSelect = null;
         this.isDraggingItems = false;
+        this.hasDraggedItems = false;
         this.itemManager.notifyChanged();
         this.updateGizmo();
       }
@@ -307,7 +324,37 @@ export class InteractionController {
     if (!this.gizmoGraphics || this.gizmoGraphics.destroyed) return;
     this.gizmoGraphics.clear();
 
-    if (this.selectedItems.size !== 1) {
+    if (this.selectedItems.size === 0) {
+      return;
+    }
+
+    // Multi-selection: draw collective bounding box frame
+    if (this.selectedItems.size > 1) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+
+      for (const it of this.selectedItems) {
+        if (!it || !it.container || it.container.destroyed) continue;
+        const b = this.itemManager.getItemBounds(it);
+        minX = Math.min(minX, b.x);
+        minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width);
+        maxY = Math.max(maxY, b.y + b.height);
+      }
+
+      if (minX !== Infinity) {
+        const pad = 4 / this.viewport.zoom;
+        const w = maxX - minX + pad * 2;
+        const h = maxY - minY + pad * 2;
+        this.gizmoGraphics.rect(minX - pad, minY - pad, w, h);
+        this.gizmoGraphics.stroke({
+          color: 0x38bdf8,
+          width: 1.5 / this.viewport.zoom,
+          alpha: 0.8,
+        });
+      }
       return;
     }
 
@@ -608,14 +655,54 @@ export class InteractionController {
 
       // 1. Check local files
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        let offsetX = 0;
-        for (const file of e.dataTransfer.files) {
+        const files = Array.from(e.dataTransfer.files);
+        const importedItems = [];
+        let curX = dropPos.x;
+        let curY = dropPos.y;
+        let rowMaxH = 0;
+        const spacing = 24;
+        const maxCols = Math.ceil(Math.sqrt(files.length));
+        let col = 0;
+
+        for (const file of files) {
           try {
-            await this.importMediaFile(file, {
-              x: dropPos.x + offsetX,
-              y: dropPos.y,
-            });
-            offsetX += 40;
+            const media = await readLocalFile(file);
+            const isVideo =
+              media.mimeType?.startsWith("video/") ||
+              media.filename.endsWith(".mp4") ||
+              media.filename.endsWith(".webm");
+
+            let item;
+            if (isVideo) {
+              item = await this.itemManager.addVideoItem({
+                dataUrl: media.dataUrl,
+                filename: `media/${media.filename}`,
+                sourcePath: media.sourcePath,
+                x: curX,
+                y: curY,
+              });
+            } else {
+              item = await this.itemManager.addImageItem({
+                dataUrl: media.dataUrl,
+                filename: `media/${media.filename}`,
+                sourcePath: media.sourcePath,
+                x: curX,
+                y: curY,
+              });
+            }
+
+            importedItems.push(item);
+            const b = this.itemManager.getItemBounds(item);
+            curX += b.width + spacing;
+            rowMaxH = Math.max(rowMaxH, b.height);
+            col++;
+
+            if (col >= maxCols) {
+              col = 0;
+              curX = dropPos.x;
+              curY += rowMaxH + spacing;
+              rowMaxH = 0;
+            }
           } catch (err) {
             console.error(`Detailed error importing file "${file.name}":`, err);
             this.notify(
@@ -624,65 +711,175 @@ export class InteractionController {
             );
           }
         }
+
+        // Select all newly imported items together
+        this.clearSelection();
+        for (const it of importedItems) {
+          this.selectedItems.add(it);
+          this.itemManager.setItemSelected(it, true);
+        }
+        this.updateGizmo();
+        if (this.onSelectionChanged) {
+          this.onSelectionChanged(Array.from(this.selectedItems));
+        }
         return;
       }
 
       // 2. Check web drop (Pinterest, Artstation, Google Images URLs or HTML)
-      const url = this.extractDroppedWebUrl(e.dataTransfer);
-      if (url) {
-        try {
-          this.notify("Downloading web reference...", "info");
-          const media = await fetchRemoteMedia(url);
-          await this.addImportedMedia(media, dropPos);
-          this.notify("Added reference from web!", "success");
-        } catch (err) {
-          console.error("Failed fetching dropped web media:", err);
-          this.notify("Could not download image from web link", "error");
+      // Collect all candidate URLs in priority order; try each until one works.
+      const candidates = this.extractDroppedWebUrls(e.dataTransfer);
+      if (candidates.length > 0) {
+        let lastErr = null;
+        for (const url of candidates) {
+          try {
+            this.notify("Downloading web reference...", "info");
+            const media = await fetchRemoteMedia(url);
+            await this.addImportedMedia(media, dropPos);
+            this.notify("Added reference from web!", "success");
+            return;
+          } catch (err) {
+            console.warn(`Drop URL failed (${url}):`, err);
+            lastErr = err;
+          }
         }
+        // All candidates failed
+        console.error("All drop URL candidates failed:", lastErr);
+        this.notify(
+          `Could not download image: ${lastErr?.message || lastErr}`,
+          "error",
+        );
       }
     });
   }
 
-  extractDroppedWebUrl(dataTransfer) {
-    // Check uri-list
+  /**
+   * Extracts all candidate URLs from a drag-and-drop DataTransfer, ordered by priority.
+   * Returns an array so the caller can try each in sequence (the first to succeed wins).
+   *
+   * Priority strategy:
+   *  1. Direct CDN media URLs (already resolved image URLs from srcset / src)
+   *  2. Pinterest page URLs (Rust backend scrapes og:image from the HTML)
+   *  3. Other page links / plain-text URLs
+   *
+   * Pinterest note: dragging a pin provides both an i.pinimg.com CDN URL AND the
+   * pinterest.com/pin/... page URL. The CDN URL works when Pinterest's CDN is accessible,
+   * but can fail due to hotlink protection. The pin page URL is the reliable fallback —
+   * the Rust fetch_remote_media will extract og:image from the page HTML.
+   */
+  extractDroppedWebUrls(dataTransfer) {
+    const candidates = [];
+    const seen = new Set();
+    const addUrl = (url) => {
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        candidates.push(url);
+      }
+    };
+
+    // 1. Check text/html for img/video sources (richest data from Pinterest, Artstation, etc.)
+    const html = dataTransfer.getData("text/html");
+    let pinPageUrl = null; // capture for fallback
+
+    if (html) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      // Extract img src / srcset
+      const img = doc.querySelector("img");
+      if (img) {
+        let bestUrl = null;
+        const srcset = img.getAttribute("srcset");
+        if (srcset) {
+          const cdnCandidates = srcset
+            .split(",")
+            .map((c) => c.trim().split(" ")[0])
+            .filter(Boolean);
+          // Try highest-res srcset entry first
+          for (const c of cdnCandidates.reverse()) {
+            let u = c;
+            if (u.includes("i.pinimg.com")) {
+              u = u.replace(/\/236x\//, "/736x/").replace(/\/474x\//, "/736x/");
+            }
+            addUrl(u);
+            if (!bestUrl) bestUrl = u;
+          }
+        }
+        if (!bestUrl) {
+          let src = img.getAttribute("src");
+          if (src?.includes("i.pinimg.com")) {
+            src = src
+              .replace(/\/236x\//, "/736x/")
+              .replace(/\/474x\//, "/736x/");
+          }
+          if (src) addUrl(src);
+        }
+      }
+
+      // Extract video sources
+      const video = doc.querySelector("video, source");
+      if (video?.src) addUrl(video.src);
+
+      // Check anchors for Pinterest pin page URL (used as fallback if CDN fails)
+      const anchor = doc.querySelector("a[href]");
+      if (anchor?.href) {
+        if (
+          anchor.href.includes("pinterest.com/pin/") ||
+          anchor.href.includes("pin.it/")
+        ) {
+          pinPageUrl = anchor.href;
+          // Don't add yet — we'll add it AFTER CDN candidates so it's tried last
+        } else if (this.isLikelyMediaUrl(anchor.href)) {
+          addUrl(anchor.href);
+        }
+      }
+    }
+
+    // 2. Check text/uri-list
     const uriList = dataTransfer.getData("text/uri-list");
     if (uriList) {
       const urls = uriList
         .split("\n")
-        .map((u) => u.trim())
-        .filter(Boolean);
+        .map((u) => u.trim().replace(/^#.*/, "")) // strip comments
+        .filter((u) => u.startsWith("http"));
+
       for (const u of urls) {
-        if (this.isLikelyMediaUrl(u)) return u;
-      }
-      if (urls.length > 0) return urls[0];
-    }
-
-    // Check HTML (Pinterest, Google Images, Artstation often enclose <img src="...">)
-    const html = dataTransfer.getData("text/html");
-    if (html) {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, "text/html");
-      const img = doc.querySelector("img");
-      if (img && img.src) {
-        return img.src;
-      }
-      const video = doc.querySelector("video, source");
-      if (video && video.src) {
-        return video.src;
+        let resolved = u;
+        if (u.includes("i.pinimg.com")) {
+          resolved = u
+            .replace(/\/236x\//, "/736x/")
+            .replace(/\/474x\//, "/736x/");
+        }
+        if (this.isLikelyMediaUrl(resolved)) {
+          addUrl(resolved);
+        } else if (u.includes("pinterest.com/pin/") || u.includes("pin.it/")) {
+          if (!pinPageUrl) pinPageUrl = u;
+        } else {
+          // Generic page link — try as fallback (Rust will scrape og:image)
+          addUrl(resolved);
+        }
       }
     }
 
-    // Check plain text
+    // 3. Add Pinterest page URL last (slowest — requires scraping, but most reliable)
+    if (pinPageUrl) addUrl(pinPageUrl);
+
+    // 4. Plain text URL fallback
     const text = dataTransfer.getData("text/plain")?.trim();
     if (text && (text.startsWith("http://") || text.startsWith("https://"))) {
-      return text;
+      let resolved = text;
+      if (text.includes("i.pinimg.com")) {
+        resolved = text
+          .replace(/\/236x\//, "/736x/")
+          .replace(/\/474x\//, "/736x/");
+      }
+      addUrl(resolved);
     }
 
-    return null;
+    return candidates;
   }
 
   isLikelyMediaUrl(url) {
-    return /\.(png|jpe?g|webp|gif|svg|mp4|webm)($|\?)/i.test(url);
+    return /\.(png|jpe?g|webp|gif|avif|svg|mp4|webm)($|\?)/i.test(url);
   }
 
   async importMediaFile(fileOrPath, position) {

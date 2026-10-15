@@ -15,10 +15,13 @@ export async function pickFolder() {
   if (isTauri()) {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
+      // Pick the board FOLDER directly — the Rust backend reads board.json inside it.
+      // We use directory:true so users pick the folder (the board), not the json file.
+      // The Rust read_board_from_folder also accepts a json file path as fallback.
       const selected = await open({
-        directory: true,
         multiple: false,
-        title: "Select Taboret Mood Board Folder",
+        directory: true,
+        title: "Open Taboret Board — select the board folder",
       });
       return selected || null;
     } catch (err) {
@@ -35,7 +38,6 @@ export async function pickFolder() {
       if (err.name !== "AbortError") {
         console.error("showDirectoryPicker error:", err);
       }
-      return null;
     }
   }
 
@@ -47,8 +49,7 @@ function pickDirectoryViaInput() {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.webkitdirectory = true;
-    input.directory = true;
+    input.accept = ".json,image/*";
     input.multiple = true;
     input.style.display = "none";
     document.body.appendChild(input);
@@ -77,10 +78,14 @@ export async function pickSaveFolder() {
   if (isTauri()) {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
+      // Pick a folder to save the board INTO.
+      // The Rust backend will write board.json + media/ inside this folder.
+      // Using a folder dialog (not a file-save dialog) is less confusing since
+      // the user is choosing where the board FOLDER lives, not a specific file.
       const selected = await open({
-        directory: true,
         multiple: false,
-        title: "Select or Create Taboret Mood Board Folder",
+        directory: true,
+        title: "Save Taboret Board — choose or create the board folder",
       });
       return selected || null;
     } catch (err) {

@@ -190,21 +190,23 @@ export class UIManager {
       </div>
       <div class="divider"></div>
       <div class="context-group">
-        <button class="btn-icon-sm" id="btnAlignLeft" title="Align Left">
+        <button class="btn-icon-sm" id="btnAlignLeft" title="Align Left edges">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="3"/><rect x="8" y="5" width="12" height="4" rx="1"/><rect x="8" y="15" width="8" height="4" rx="1"/></svg>
         </button>
-        <button class="btn-icon-sm" id="btnAlignCenterH" title="Align Horizontal Center">
+        <button class="btn-icon-sm" id="btnAlignCenterH" title="Center horizontally">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="21" x2="12" y2="3"/><rect x="5" y="5" width="14" height="4" rx="1"/><rect x="7" y="15" width="10" height="4" rx="1"/></svg>
         </button>
-        <button class="btn-icon-sm" id="btnAlignRight" title="Align Right">
+        <button class="btn-icon-sm" id="btnAlignRight" title="Align Right edges">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="20" y1="21" x2="20" y2="3"/><rect x="4" y="5" width="12" height="4" rx="1"/><rect x="8" y="15" width="8" height="4" rx="1"/></svg>
         </button>
-        <button class="btn-icon-sm" id="btnAlignTop" title="Align Top">
+        <button class="btn-icon-sm" id="btnAlignTop" title="Align Top edges">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="4" x2="21" y2="4"/><rect x="5" y="8" width="4" height="12" rx="1"/><rect x="15" y="8" width="4" height="8" rx="1"/></svg>
         </button>
-        <button class="btn-icon-sm" id="btnAlignBottom" title="Align Bottom">
+        <button class="btn-icon-sm" id="btnAlignBottom" title="Align Bottom edges">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="20" x2="21" y2="20"/><rect x="5" y="4" width="4" height="12" rx="1"/><rect x="15" y="8" width="4" height="8" rx="1"/></svg>
         </button>
+        <button class="btn-icon-sm" id="btnDistributeH" title="Distribute horizontally (3+ items)" style="font-size:11px; letter-spacing:-1px;">⇔ H</button>
+        <button class="btn-icon-sm" id="btnDistributeV" title="Distribute vertically (3+ items)" style="font-size:11px; letter-spacing:-1px;">⇕ V</button>
         <button class="btn-icon-sm" id="btnArrangeGrid" title="Pack / Arrange Grid">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
         </button>
@@ -240,6 +242,10 @@ export class UIManager {
     bar.querySelector("#btnAlignTop").onclick = () => this.onAlign?.("top");
     bar.querySelector("#btnAlignBottom").onclick = () =>
       this.onAlign?.("bottom");
+    bar.querySelector("#btnDistributeH").onclick = () =>
+      this.onAlign?.("distribute-h");
+    bar.querySelector("#btnDistributeV").onclick = () =>
+      this.onAlign?.("distribute-v");
     bar.querySelector("#btnArrangeGrid").onclick = () => this.onArrange?.();
     bar.querySelector("#btnNormHeight").onclick = () =>
       this.onNormalize?.("height");
@@ -265,6 +271,15 @@ export class UIManager {
       btn.style.opacity = selectedItems.length > 1 ? "1" : "0.4";
       btn.style.pointerEvents = selectedItems.length > 1 ? "auto" : "none";
     }
+
+    // Distribute buttons need 3+ items
+    const distributeOnly = this.contextBar.querySelectorAll(
+      "#btnDistributeH, #btnDistributeV",
+    );
+    for (const btn of distributeOnly) {
+      btn.style.opacity = selectedItems.length >= 3 ? "1" : "0.4";
+      btn.style.pointerEvents = selectedItems.length >= 3 ? "auto" : "none";
+    }
   }
 
   createContextMenu() {
@@ -282,6 +297,8 @@ export class UIManager {
       <div class="menu-item" data-action="back"><span>Send to Back</span><span class="shortcut">[</span></div>
       <div class="menu-divider"></div>
       <div class="menu-item" data-action="arrange"><span>Arrange in Grid</span></div>
+      <div class="menu-item" data-action="distribute-h"><span>Distribute Horizontally</span></div>
+      <div class="menu-item" data-action="distribute-v"><span>Distribute Vertically</span></div>
       <div class="menu-item" data-action="match-h"><span>Match Heights</span></div>
       <div class="menu-item" data-action="match-w"><span>Match Widths</span></div>
       <div class="menu-divider"></div>
@@ -342,6 +359,12 @@ export class UIManager {
         break;
       case "arrange":
         this.onArrange?.();
+        break;
+      case "distribute-h":
+        this.onAlign?.("distribute-h");
+        break;
+      case "distribute-v":
+        this.onAlign?.("distribute-v");
         break;
       case "match-h":
         this.onNormalize?.("height");

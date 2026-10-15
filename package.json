@@ -7,7 +7,10 @@
     "start": "pnpm dev",
     "build": "pnpm lint && vite build",
     "lint": "eslint .",
-    "dev": "vite"
+    "dev": "vite",
+    "tauri": "tauri",
+    "tauri:dev": "GDK_BACKEND=x11 pnpm tauri dev",
+    "tauri:build": "GDK_BACKEND=x11 pnpm tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
