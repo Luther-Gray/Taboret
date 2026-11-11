@@ -136,8 +136,10 @@ fn fetch_remote_media(mut url: String) -> Result<FetchedMediaResult, String> {
         url = url.replace("/236x/", "/736x/").replace("/474x/", "/736x/");
     }
 
-    // Determine referrer from the URL's own origin (many CDNs check this)
-    let referer = if let Ok(parsed) = url::Url::parse(&url) {
+    // Determine referrer from the URL's own origin (Pinterest CDN requires pinterest.com referrer)
+    let referer = if url.contains("pinimg.com") || url.contains("pinterest.com") {
+        "https://www.pinterest.com/".to_string()
+    } else if let Ok(parsed) = url::Url::parse(&url) {
         format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""))
     } else {
         "https://www.google.com/".to_string()
@@ -146,7 +148,10 @@ fn fetch_remote_media(mut url: String) -> Result<FetchedMediaResult, String> {
     let resp = ureq::get(&url)
         .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
         .set("Referer", &referer)
-        .set("Accept", "image/avif,image/webp,image/png,image/*,*/*;q=0.8")
+        .set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+        .set("Sec-Fetch-Dest", "image")
+        .set("Sec-Fetch-Mode", "no-cors")
+        .set("Sec-Fetch-Site", "cross-site")
         .call()
         .map_err(|e| format!("Failed to fetch remote media: {}", e))?;
 
@@ -172,7 +177,9 @@ fn fetch_remote_media(mut url: String) -> Result<FetchedMediaResult, String> {
             target_image_url
         };
 
-        let img_referer = if let Ok(parsed) = url::Url::parse(&target_image_url) {
+        let img_referer = if target_image_url.contains("pinimg.com") || target_image_url.contains("pinterest.com") {
+            "https://www.pinterest.com/".to_string()
+        } else if let Ok(parsed) = url::Url::parse(&target_image_url) {
             format!("{}://{}/", parsed.scheme(), parsed.host_str().unwrap_or(""))
         } else {
             referer.clone()
@@ -181,7 +188,10 @@ fn fetch_remote_media(mut url: String) -> Result<FetchedMediaResult, String> {
         let img_resp = ureq::get(&target_image_url)
             .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
             .set("Referer", &img_referer)
-            .set("Accept", "image/avif,image/webp,image/png,image/*,*/*;q=0.8")
+            .set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            .set("Sec-Fetch-Dest", "image")
+            .set("Sec-Fetch-Mode", "no-cors")
+            .set("Sec-Fetch-Site", "cross-site")
             .call()
             .map_err(|e| format!("Failed fetching extracted image: {}", e))?;
 
@@ -290,6 +300,32 @@ fn extract_og_image(html: &str, page_url: &str) -> Option<String> {
 
             search_pos = abs_pos + key.len();
         }
+    }
+
+    // Fallback: search for first <img ... src="https://..." or <img ... src='https://...' (BeeRef parity)
+    let mut img_search_pos = 0;
+    while let Some(img_pos) = html[img_search_pos..].find("<img") {
+        let abs_img = img_search_pos + img_pos;
+        let window_end = (abs_img + 1024).min(html.len());
+        let window = &html[abs_img..window_end];
+
+        for marker in &["src=\"https", "src='https", "src=\"//", "src='//"] {
+            if let Some(spos) = window.find(marker) {
+                let start_idx = spos + 5; // after src=" or src='
+                let after = &window[start_idx..];
+                let end = after.find(|c| c == '"' || c == '\'').unwrap_or(after.len());
+                let candidate = &after[..end];
+                let full_url = if candidate.starts_with("//") {
+                    format!("https:{}", candidate)
+                } else {
+                    candidate.to_string()
+                };
+                if full_url.starts_with("http") && full_url.len() > 10 {
+                    return Some(full_url);
+                }
+            }
+        }
+        img_search_pos = abs_img + 4;
     }
 
     None

@@ -642,6 +642,37 @@ export class InteractionController {
 
   // ---------------- DRAG & DROP MEDIA (Requirement 1) ----------------
   setupDragAndDrop() {
+    // 1. Native Tauri Drag & Drop for OS file drops on Linux / WebKitGTK / Wayland
+    if (
+      typeof window !== "undefined" &&
+      Boolean(window.__TAURI_INTERNALS__ || window.__TAURI__)
+    ) {
+      import("@tauri-apps/api/webview")
+        .then(({ getCurrentWebview }) => {
+          getCurrentWebview()
+            .onDragDropEvent(async (event) => {
+              if (event.payload.type === "drop") {
+                const paths = event.payload.paths;
+                if (!paths || paths.length === 0) return;
+
+                const dpr = window.devicePixelRatio || 1;
+                const screenX = (event.payload.position?.x ?? 0) / dpr;
+                const screenY = (event.payload.position?.y ?? 0) / dpr;
+                const dropPos = this.viewport.screenToCanvas(screenX, screenY);
+
+                await this.importFileList(paths, dropPos);
+              }
+            })
+            .catch((err) => {
+              console.warn("Failed to attach Tauri onDragDropEvent:", err);
+            });
+        })
+        .catch((e) => {
+          console.warn("Could not import Tauri webview API:", e);
+        });
+    }
+
+    // 2. HTML5 Drag & Drop (for web references: Pinterest, Artstation, Cara, Google Images)
     const dropZone = window;
 
     dropZone.addEventListener("dragover", (e) => {
@@ -653,79 +684,13 @@ export class InteractionController {
       e.preventDefault();
       const dropPos = this.viewport.screenToCanvas(e.clientX, e.clientY);
 
-      // 1. Check local files
+      // Check local files (works in web browsers)
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        const files = Array.from(e.dataTransfer.files);
-        const importedItems = [];
-        let curX = dropPos.x;
-        let curY = dropPos.y;
-        let rowMaxH = 0;
-        const spacing = 24;
-        const maxCols = Math.ceil(Math.sqrt(files.length));
-        let col = 0;
-
-        for (const file of files) {
-          try {
-            const media = await readLocalFile(file);
-            const isVideo =
-              media.mimeType?.startsWith("video/") ||
-              media.filename.endsWith(".mp4") ||
-              media.filename.endsWith(".webm");
-
-            let item;
-            if (isVideo) {
-              item = await this.itemManager.addVideoItem({
-                dataUrl: media.dataUrl,
-                filename: `media/${media.filename}`,
-                sourcePath: media.sourcePath,
-                x: curX,
-                y: curY,
-              });
-            } else {
-              item = await this.itemManager.addImageItem({
-                dataUrl: media.dataUrl,
-                filename: `media/${media.filename}`,
-                sourcePath: media.sourcePath,
-                x: curX,
-                y: curY,
-              });
-            }
-
-            importedItems.push(item);
-            const b = this.itemManager.getItemBounds(item);
-            curX += b.width + spacing;
-            rowMaxH = Math.max(rowMaxH, b.height);
-            col++;
-
-            if (col >= maxCols) {
-              col = 0;
-              curX = dropPos.x;
-              curY += rowMaxH + spacing;
-              rowMaxH = 0;
-            }
-          } catch (err) {
-            console.error(`Detailed error importing file "${file.name}":`, err);
-            this.notify(
-              `Failed importing ${file.name}: ${err?.message || "Invalid or unsupported media"}`,
-              "error",
-            );
-          }
-        }
-
-        // Select all newly imported items together
-        this.clearSelection();
-        for (const it of importedItems) {
-          this.selectedItems.add(it);
-          this.itemManager.setItemSelected(it, true);
-        }
-        this.updateGizmo();
-        if (this.onSelectionChanged) {
-          this.onSelectionChanged(Array.from(this.selectedItems));
-        }
+        await this.importFileList(Array.from(e.dataTransfer.files), dropPos);
         return;
       }
 
-      // 2. Check web drop (Pinterest, Artstation, Google Images URLs or HTML)
+      // Check web drop (Pinterest, Artstation, Cara, Google Images URLs or HTML)
       // Collect all candidate URLs in priority order; try each until one works.
       const candidates = this.extractDroppedWebUrls(e.dataTransfer);
       if (candidates.length > 0) {
@@ -752,19 +717,81 @@ export class InteractionController {
     });
   }
 
+  async importFileList(files, dropPos) {
+    const importedItems = [];
+    let curX = dropPos.x;
+    let curY = dropPos.y;
+    let rowMaxH = 0;
+    const spacing = 24;
+    const maxCols = Math.ceil(Math.sqrt(files.length));
+    let col = 0;
+
+    for (const file of files) {
+      try {
+        const media = await readLocalFile(file);
+        const isVideo =
+          media.mimeType?.startsWith("video/") ||
+          media.filename.endsWith(".mp4") ||
+          media.filename.endsWith(".webm");
+
+        let item;
+        if (isVideo) {
+          item = await this.itemManager.addVideoItem({
+            dataUrl: media.dataUrl,
+            filename: `media/${media.filename}`,
+            sourcePath: media.sourcePath,
+            x: curX,
+            y: curY,
+          });
+        } else {
+          item = await this.itemManager.addImageItem({
+            dataUrl: media.dataUrl,
+            filename: `media/${media.filename}`,
+            sourcePath: media.sourcePath,
+            x: curX,
+            y: curY,
+          });
+        }
+
+        importedItems.push(item);
+        const b = this.itemManager.getItemBounds(item);
+        curX += b.width + spacing;
+        rowMaxH = Math.max(rowMaxH, b.height);
+        col++;
+
+        if (col >= maxCols) {
+          col = 0;
+          curX = dropPos.x;
+          curY += rowMaxH + spacing;
+          rowMaxH = 0;
+        }
+      } catch (err) {
+        const name =
+          typeof file === "string" ? file.split("/").pop() : file?.name;
+        console.error(`Detailed error importing file "${name}":`, err);
+        this.notify(
+          `Failed importing ${name}: ${err?.message || "Invalid or unsupported media"}`,
+          "error",
+        );
+      }
+    }
+
+    if (importedItems.length > 0) {
+      this.clearSelection();
+      for (const it of importedItems) {
+        this.selectedItems.add(it);
+        this.itemManager.setItemSelected(it, true);
+      }
+      this.updateGizmo();
+      if (this.onSelectionChanged) {
+        this.onSelectionChanged(Array.from(this.selectedItems));
+      }
+    }
+  }
+
   /**
    * Extracts all candidate URLs from a drag-and-drop DataTransfer, ordered by priority.
    * Returns an array so the caller can try each in sequence (the first to succeed wins).
-   *
-   * Priority strategy:
-   *  1. Direct CDN media URLs (already resolved image URLs from srcset / src)
-   *  2. Pinterest page URLs (Rust backend scrapes og:image from the HTML)
-   *  3. Other page links / plain-text URLs
-   *
-   * Pinterest note: dragging a pin provides both an i.pinimg.com CDN URL AND the
-   * pinterest.com/pin/... page URL. The CDN URL works when Pinterest's CDN is accessible,
-   * but can fail due to hotlink protection. The pin page URL is the reliable fallback —
-   * the Rust fetch_remote_media will extract og:image from the page HTML.
    */
   extractDroppedWebUrls(dataTransfer) {
     const candidates = [];
@@ -776,60 +803,64 @@ export class InteractionController {
       }
     };
 
-    // 1. Check text/html for img/video sources (richest data from Pinterest, Artstation, etc.)
+    // 1. Check text/html for img/video sources (richest data from Pinterest, Artstation, Cara, etc.)
     const html = dataTransfer.getData("text/html");
-    let pinPageUrl = null; // capture for fallback
+    let pinPageUrl = null;
 
     if (html) {
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, "text/html");
 
-      // Extract img src / srcset
-      const img = doc.querySelector("img");
-      if (img) {
-        let bestUrl = null;
+      // Extract all img elements (Pinterest pins are often nested inside container divs)
+      const imgs = doc.querySelectorAll("img");
+      for (const img of imgs) {
         const srcset = img.getAttribute("srcset");
         if (srcset) {
           const cdnCandidates = srcset
             .split(",")
             .map((c) => c.trim().split(" ")[0])
             .filter(Boolean);
-          // Try highest-res srcset entry first
+          // Try highest-res srcset entries first
           for (const c of cdnCandidates.reverse()) {
-            let u = c;
-            if (u.includes("i.pinimg.com")) {
-              u = u.replace(/\/236x\//, "/736x/").replace(/\/474x\//, "/736x/");
+            addUrl(c);
+            if (c.includes("i.pinimg.com")) {
+              addUrl(c.replace(/\/(236x|474x|originals)\//, "/736x/"));
+              addUrl(c.replace(/\/(236x|474x|736x)\//, "/1200x/"));
             }
-            addUrl(u);
-            if (!bestUrl) bestUrl = u;
           }
         }
-        if (!bestUrl) {
-          let src = img.getAttribute("src");
-          if (src?.includes("i.pinimg.com")) {
-            src = src
-              .replace(/\/236x\//, "/736x/")
-              .replace(/\/474x\//, "/736x/");
+
+        const src = img.getAttribute("src");
+        if (src) {
+          addUrl(src);
+          if (src.includes("i.pinimg.com")) {
+            addUrl(src.replace(/\/(236x|474x|originals)\//, "/736x/"));
+            addUrl(src.replace(/\/(236x|474x|736x)\//, "/1200x/"));
           }
-          if (src) addUrl(src);
         }
       }
 
       // Extract video sources
-      const video = doc.querySelector("video, source");
-      if (video?.src) addUrl(video.src);
+      const videos = doc.querySelectorAll("video, source");
+      for (const v of videos) {
+        if (v.src) addUrl(v.src);
+      }
 
-      // Check anchors for Pinterest pin page URL (used as fallback if CDN fails)
-      const anchor = doc.querySelector("a[href]");
-      if (anchor?.href) {
+      // Check anchors for Pinterest pin page URL or direct media links
+      const anchors = doc.querySelectorAll("a[href]");
+      for (const a of anchors) {
+        const rawHref = a.getAttribute("href") || "";
+        let fullHref = rawHref;
+        if (rawHref.startsWith("/pin/")) {
+          fullHref = `https://www.pinterest.com${rawHref}`;
+        }
         if (
-          anchor.href.includes("pinterest.com/pin/") ||
-          anchor.href.includes("pin.it/")
+          fullHref.includes("pinterest.com/pin/") ||
+          fullHref.includes("pin.it/")
         ) {
-          pinPageUrl = anchor.href;
-          // Don't add yet — we'll add it AFTER CDN candidates so it's tried last
-        } else if (this.isLikelyMediaUrl(anchor.href)) {
-          addUrl(anchor.href);
+          if (!pinPageUrl) pinPageUrl = fullHref;
+        } else if (this.isLikelyMediaUrl(fullHref)) {
+          addUrl(fullHref);
         }
       }
     }
@@ -845,35 +876,35 @@ export class InteractionController {
       for (const u of urls) {
         let resolved = u;
         if (u.includes("i.pinimg.com")) {
-          resolved = u
-            .replace(/\/236x\//, "/736x/")
-            .replace(/\/474x\//, "/736x/");
-        }
-        if (this.isLikelyMediaUrl(resolved)) {
+          addUrl(u);
+          addUrl(u.replace(/\/(236x|474x|originals)\//, "/736x/"));
+          addUrl(u.replace(/\/(236x|474x|736x)\//, "/1200x/"));
+        } else if (this.isLikelyMediaUrl(resolved)) {
           addUrl(resolved);
         } else if (u.includes("pinterest.com/pin/") || u.includes("pin.it/")) {
           if (!pinPageUrl) pinPageUrl = u;
         } else {
-          // Generic page link — try as fallback (Rust will scrape og:image)
           addUrl(resolved);
         }
       }
     }
 
-    // 3. Add Pinterest page URL last (slowest — requires scraping, but most reliable)
-    if (pinPageUrl) addUrl(pinPageUrl);
-
-    // 4. Plain text URL fallback
+    // 3. Plain text URL fallback
     const text = dataTransfer.getData("text/plain")?.trim();
     if (text && (text.startsWith("http://") || text.startsWith("https://"))) {
-      let resolved = text;
-      if (text.includes("i.pinimg.com")) {
-        resolved = text
-          .replace(/\/236x\//, "/736x/")
-          .replace(/\/474x\//, "/736x/");
+      if (text.includes("pinterest.com/pin/") || text.includes("pin.it/")) {
+        if (!pinPageUrl) pinPageUrl = text;
+      } else {
+        addUrl(text);
+        if (text.includes("i.pinimg.com")) {
+          addUrl(text.replace(/\/(236x|474x|originals)\//, "/736x/"));
+          addUrl(text.replace(/\/(236x|474x|736x)\//, "/1200x/"));
+        }
       }
-      addUrl(resolved);
     }
+
+    // 4. Add Pinterest page URL (tried if direct CDN URLs return 403 hotlink blocked)
+    if (pinPageUrl) addUrl(pinPageUrl);
 
     return candidates;
   }

@@ -24,6 +24,8 @@ export class UIManager {
     this.onAddMedia = null;
     this.onAddText = null;
     this.onArrange = null;
+    this.onArrangeRow = null;
+    this.onArrangeCol = null;
     this.onAlign = null;
     this.onNormalize = null;
     this.onFlipH = null;
@@ -97,13 +99,13 @@ export class UIManager {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
           <span>New</span>
         </button>
-        <button class="btn btn-icon" id="btnOpen" title="Open Folder (Ctrl+O)">
+        <button class="btn btn-icon" id="btnOpen" title="Open Board Folder (Ctrl+O)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-          <span>Open</span>
+          <span>Open Folder</span>
         </button>
-        <button class="btn btn-icon btn-primary" id="btnSave" title="Save to Folder (Ctrl+S)">
+        <button class="btn btn-icon btn-primary" id="btnSave" title="Save Board Folder (Ctrl+S)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-          <span>Save</span>
+          <span>Save Folder</span>
         </button>
         <div class="divider"></div>
         <button class="btn btn-icon" id="btnAddMedia" title="Import Local Media (or drag files/links onto canvas)">
@@ -143,7 +145,17 @@ export class UIManager {
     bar.querySelector("#btnArrangeTop").onclick = () => this.onArrange?.();
 
     const mediaInput = bar.querySelector("#mediaFileInput");
-    bar.querySelector("#btnAddMedia").onclick = () => mediaInput.click();
+    bar.querySelector("#btnAddMedia").onclick = async () => {
+      const { isTauri, pickMediaFiles } = await import("./storage.js");
+      if (isTauri()) {
+        const pickedPaths = await pickMediaFiles();
+        if (pickedPaths && pickedPaths.length > 0) {
+          this.onAddMedia?.(pickedPaths);
+        }
+      } else {
+        mediaInput.click();
+      }
+    };
     mediaInput.onchange = (e) => {
       if (e.target.files && e.target.files.length > 0) {
         this.onAddMedia?.(Array.from(e.target.files));
@@ -207,6 +219,12 @@ export class UIManager {
         </button>
         <button class="btn-icon-sm" id="btnDistributeH" title="Distribute horizontally (3+ items)" style="font-size:11px; letter-spacing:-1px;">⇔ H</button>
         <button class="btn-icon-sm" id="btnDistributeV" title="Distribute vertically (3+ items)" style="font-size:11px; letter-spacing:-1px;">⇕ V</button>
+        <button class="btn-icon-sm" id="btnArrangeRow" title="Line up in Row (Arrange Horizontal)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="7" width="5" height="10" rx="1"/><rect x="10" y="7" width="5" height="10" rx="1"/><rect x="17" y="7" width="5" height="10" rx="1"/></svg>
+        </button>
+        <button class="btn-icon-sm" id="btnArrangeCol" title="Line up in Column (Arrange Vertical)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="7" y="10" width="10" height="5" rx="1"/><rect x="7" y="17" width="10" height="5" rx="1"/></svg>
+        </button>
         <button class="btn-icon-sm" id="btnArrangeGrid" title="Pack / Arrange Grid">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
         </button>
@@ -246,6 +264,8 @@ export class UIManager {
       this.onAlign?.("distribute-h");
     bar.querySelector("#btnDistributeV").onclick = () =>
       this.onAlign?.("distribute-v");
+    bar.querySelector("#btnArrangeRow").onclick = () => this.onArrangeRow?.();
+    bar.querySelector("#btnArrangeCol").onclick = () => this.onArrangeCol?.();
     bar.querySelector("#btnArrangeGrid").onclick = () => this.onArrange?.();
     bar.querySelector("#btnNormHeight").onclick = () =>
       this.onNormalize?.("height");
@@ -265,7 +285,7 @@ export class UIManager {
     countLabel.textContent = `${selectedItems.length} ${selectedItems.length === 1 ? "item" : "items"}`;
 
     const multiOnly = this.contextBar.querySelectorAll(
-      "#btnAlignLeft, #btnAlignCenterH, #btnAlignRight, #btnAlignTop, #btnAlignBottom, #btnArrangeGrid, #btnNormHeight, #btnNormWidth, #btnGroup",
+      "#btnAlignLeft, #btnAlignCenterH, #btnAlignRight, #btnAlignTop, #btnAlignBottom, #btnArrangeRow, #btnArrangeCol, #btnArrangeGrid, #btnNormHeight, #btnNormWidth, #btnGroup",
     );
     for (const btn of multiOnly) {
       btn.style.opacity = selectedItems.length > 1 ? "1" : "0.4";

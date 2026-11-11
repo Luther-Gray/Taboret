@@ -21,7 +21,7 @@ export async function pickFolder() {
       const selected = await open({
         multiple: false,
         directory: true,
-        title: "Open Taboret Board — select the board folder",
+        title: "Open Board Directory — Select folder containing board.json",
       });
       return selected || null;
     } catch (err) {
@@ -43,6 +43,45 @@ export async function pickFolder() {
 
   // Fallback for browsers without showDirectoryPicker (Firefox, Safari)
   return await pickDirectoryViaInput();
+}
+
+/**
+ * Prompt user to pick media files (images/videos) natively in Tauri.
+ * Returns an array of file path strings, or null if not in Tauri.
+ */
+export async function pickMediaFiles() {
+  if (isTauri()) {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: true,
+        directory: false,
+        filters: [
+          {
+            name: "Images & Videos",
+            extensions: [
+              "png",
+              "jpg",
+              "jpeg",
+              "webp",
+              "gif",
+              "svg",
+              "avif",
+              "mp4",
+              "webm",
+            ],
+          },
+        ],
+        title: "Import Media — Choose images or videos",
+      });
+      if (!selected) return [];
+      return Array.isArray(selected) ? selected : [selected];
+    } catch (err) {
+      console.error("Tauri pickMediaFiles error:", err);
+      return [];
+    }
+  }
+  return null;
 }
 
 function pickDirectoryViaInput() {
@@ -85,7 +124,7 @@ export async function pickSaveFolder() {
       const selected = await open({
         multiple: false,
         directory: true,
-        title: "Save Taboret Board — choose or create the board folder",
+        title: "Save Board Directory — Select or create the board folder",
       });
       return selected || null;
     } catch (err) {

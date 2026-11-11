@@ -31,30 +31,47 @@ export class ItemManager {
     let height = data.height;
     let texture;
 
-    // Decode image to ensure valid data and natural dimensions
-    const img = new Image();
-    img.src = dataUrl;
-    try {
-      if (img.decode) {
-        await img.decode();
-      } else {
-        await new Promise((resolve, reject) => {
-          img.onload = () => resolve();
-          img.onerror = () => reject(new Error("Image data decoding failed"));
-        });
+    // Decode image to ensure valid data and natural dimensions without freezing on WebKitGTK
+    await new Promise((resolve) => {
+      const img = new Image();
+      let finished = false;
+      const done = () => {
+        if (!finished) {
+          finished = true;
+          width = width || img.naturalWidth || 400;
+          height = height || img.naturalHeight || 300;
+          try {
+            texture = PIXI.Texture.from(img);
+          } catch {
+            texture = PIXI.Texture.from(dataUrl);
+          }
+          resolve();
+        }
+      };
+
+      img.onload = done;
+      img.onerror = () => {
+        if (!finished) {
+          finished = true;
+          try {
+            texture = PIXI.Texture.from(dataUrl);
+          } catch {
+            texture = PIXI.Texture.WHITE;
+          }
+          width = width || 400;
+          height = height || 300;
+          resolve();
+        }
+      };
+
+      // 2.5s safety timeout to prevent WebKitGTK decode hangs
+      setTimeout(done, 2500);
+
+      img.src = dataUrl;
+      if (img.complete && img.naturalWidth > 0) {
+        done();
       }
-      width = width || img.naturalWidth || 400;
-      height = height || img.naturalHeight || 300;
-      texture = PIXI.Texture.from(img);
-    } catch (decodeErr) {
-      console.warn(
-        "Direct image decode failed, falling back to PIXI.Texture.from:",
-        decodeErr,
-      );
-      texture = PIXI.Texture.from(dataUrl);
-      width = width || 400;
-      height = height || 300;
-    }
+    });
 
     const item = {
       id,
@@ -568,7 +585,9 @@ export class ItemManager {
       const sorted = [...boundsList].sort((a, b) => a.x - b.x);
       const totalWidth = sorted.reduce((sum, b) => sum + b.width, 0);
       const span = maxX - minX;
-      const gap = (span - totalWidth) / (sorted.length - 1);
+      // Ensure positive gap: if items overlap, use clean 24px spacing instead of negative gap
+      const calculatedGap = (span - totalWidth) / (sorted.length - 1);
+      const gap = Math.max(24, calculatedGap);
       let curX = minX;
       for (const b of sorted) {
         this.setItemPosition(b.item, curX + b.width / 2, b.item.y);
@@ -584,7 +603,8 @@ export class ItemManager {
       const sorted = [...boundsList].sort((a, b) => a.y - b.y);
       const totalHeight = sorted.reduce((sum, b) => sum + b.height, 0);
       const span = maxY - minY;
-      const gap = (span - totalHeight) / (sorted.length - 1);
+      const calculatedGap = (span - totalHeight) / (sorted.length - 1);
+      const gap = Math.max(24, calculatedGap);
       let curY = minY;
       for (const b of sorted) {
         this.setItemPosition(b.item, b.item.x, curY + b.height / 2);
@@ -664,6 +684,62 @@ export class ItemManager {
       currentX += bounds.width + spacing;
       rowMaxHeight = Math.max(rowMaxHeight, bounds.height);
     });
+
+    this.updateGroupDisplay();
+    this.notifyChanged();
+  }
+
+  /**
+   * Arranges selected items in a single horizontal row with consistent spacing (BeeRef Arrange Horizontal).
+   * Centered vertically along the collective bounding box center.
+   */
+  arrangeHorizontal(selectedItems, spacing = 24) {
+    if (!selectedItems || selectedItems.length < 2) return;
+
+    const sorted = [...selectedItems].sort((a, b) => a.x - b.x);
+    const boundsList = sorted.map((item) => ({
+      item,
+      ...this.getItemBounds(item),
+    }));
+
+    const startX = Math.min(...boundsList.map((b) => b.x));
+    const minY = Math.min(...boundsList.map((b) => b.y));
+    const maxY = Math.max(...boundsList.map((b) => b.y + b.height));
+    const centerY = (minY + maxY) / 2;
+
+    let currentX = startX;
+    for (const b of boundsList) {
+      this.setItemPosition(b.item, currentX + b.width / 2, centerY);
+      currentX += b.width + spacing;
+    }
+
+    this.updateGroupDisplay();
+    this.notifyChanged();
+  }
+
+  /**
+   * Arranges selected items in a single vertical column with consistent spacing (BeeRef Arrange Vertical).
+   * Centered horizontally along the collective bounding box center.
+   */
+  arrangeVertical(selectedItems, spacing = 24) {
+    if (!selectedItems || selectedItems.length < 2) return;
+
+    const sorted = [...selectedItems].sort((a, b) => a.y - b.y);
+    const boundsList = sorted.map((item) => ({
+      item,
+      ...this.getItemBounds(item),
+    }));
+
+    const startY = Math.min(...boundsList.map((b) => b.y));
+    const minX = Math.min(...boundsList.map((b) => b.x));
+    const maxX = Math.max(...boundsList.map((b) => b.x + b.width));
+    const centerX = (minX + maxX) / 2;
+
+    let currentY = startY;
+    for (const b of boundsList) {
+      this.setItemPosition(b.item, centerX, currentY + b.height / 2);
+      currentY += b.height + spacing;
+    }
 
     this.updateGroupDisplay();
     this.notifyChanged();

@@ -206,6 +206,28 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
     }
   };
 
+  ui.onArrangeRow = () => {
+    const selected = Array.from(interactions.selectedItems);
+    const items =
+      selected.length > 1 ? selected : Array.from(itemManager.items.values());
+    if (items.length > 1) {
+      itemManager.arrangeHorizontal(items);
+      interactions.updateGizmo();
+      ui.showToast("Arranged references in row", "info");
+    }
+  };
+
+  ui.onArrangeCol = () => {
+    const selected = Array.from(interactions.selectedItems);
+    const items =
+      selected.length > 1 ? selected : Array.from(itemManager.items.values());
+    if (items.length > 1) {
+      itemManager.arrangeVertical(items);
+      interactions.updateGizmo();
+      ui.showToast("Arranged references in column", "info");
+    }
+  };
+
   ui.onAlign = (mode) => {
     const selected = Array.from(interactions.selectedItems);
     if (selected.length > 1) {
