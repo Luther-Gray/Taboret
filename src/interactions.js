@@ -726,31 +726,51 @@ export class InteractionController {
     const maxCols = Math.ceil(Math.sqrt(files.length));
     let col = 0;
 
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       try {
         const media = await readLocalFile(file);
         const isVideo =
           media.mimeType?.startsWith("video/") ||
-          media.filename.endsWith(".mp4") ||
-          media.filename.endsWith(".webm");
+          /\.(mp4|webm)$/i.test(media.filename);
 
         let item;
         if (isVideo) {
-          item = await this.itemManager.addVideoItem({
-            dataUrl: media.dataUrl,
-            filename: `media/${media.filename}`,
-            sourcePath: media.sourcePath,
-            x: curX,
-            y: curY,
-          });
+          try {
+            item = await this.itemManager.addVideoItem(
+              {
+                dataUrl: media.dataUrl,
+                filename: `media/${media.filename}`,
+                sourcePath: media.sourcePath,
+                x: curX,
+                y: curY,
+              },
+              { skipNotify: true },
+            );
+          } catch (vidErr) {
+            console.warn("Video import failed, falling back to image:", vidErr);
+            item = await this.itemManager.addImageItem(
+              {
+                dataUrl: media.dataUrl,
+                filename: `media/${media.filename}`,
+                sourcePath: media.sourcePath,
+                x: curX,
+                y: curY,
+              },
+              { skipNotify: true },
+            );
+          }
         } else {
-          item = await this.itemManager.addImageItem({
-            dataUrl: media.dataUrl,
-            filename: `media/${media.filename}`,
-            sourcePath: media.sourcePath,
-            x: curX,
-            y: curY,
-          });
+          item = await this.itemManager.addImageItem(
+            {
+              dataUrl: media.dataUrl,
+              filename: `media/${media.filename}`,
+              sourcePath: media.sourcePath,
+              x: curX,
+              y: curY,
+            },
+            { skipNotify: true },
+          );
         }
 
         importedItems.push(item);
@@ -765,6 +785,13 @@ export class InteractionController {
           curY += rowMaxH + spacing;
           rowMaxH = 0;
         }
+
+        // Yield to browser event loop between batch items
+        // Gives WebKitGTK and Mesa EGL a chance to flush texture uploads,
+        // release Base64 memory buffers, and prevent EGL context exhaustion.
+        if (files.length > 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
       } catch (err) {
         const name =
           typeof file === "string" ? file.split("/").pop() : file?.name;
@@ -777,6 +804,8 @@ export class InteractionController {
     }
 
     if (importedItems.length > 0) {
+      this.itemManager.updateGroupDisplay();
+      this.itemManager.notifyChanged();
       this.clearSelection();
       for (const it of importedItems) {
         this.selectedItems.add(it);

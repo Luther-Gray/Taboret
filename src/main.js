@@ -168,18 +168,7 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
       viewport.app.screen.width / 2,
       viewport.app.screen.height / 2,
     );
-    let offset = 0;
-    for (const file of files) {
-      try {
-        await interactions.importMediaFile(file, {
-          x: center.x + offset,
-          y: center.y + offset,
-        });
-        offset += 30;
-      } catch (e) {
-        console.error("Failed adding file:", e);
-      }
-    }
+    await interactions.importFileList(files, center);
   };
 
   ui.onAddText = () => {

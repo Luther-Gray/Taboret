@@ -23,7 +23,7 @@ export class ItemManager {
     this.onItemsChanged = null;
   }
 
-  async addImageItem(data, _options = {}) {
+  async addImageItem(data, options = {}) {
     const id = data.id || generateId("img");
     const dataUrl = data.dataUrl;
 
@@ -40,8 +40,31 @@ export class ItemManager {
           finished = true;
           width = width || img.naturalWidth || 400;
           height = height || img.naturalHeight || 300;
+
+          // Protect GPU VRAM and Mesa EGL from giant textures (e.g. 8000px raw photos)
+          const maxDim = 4096;
+          let source = img;
+          if (img.naturalWidth > maxDim || img.naturalHeight > maxDim) {
+            try {
+              const scale = Math.min(
+                maxDim / img.naturalWidth,
+                maxDim / img.naturalHeight,
+              );
+              const canvas = document.createElement("canvas");
+              canvas.width = Math.round(img.naturalWidth * scale);
+              canvas.height = Math.round(img.naturalHeight * scale);
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                source = canvas;
+              }
+            } catch (downscaleErr) {
+              console.warn("Could not downscale giant image:", downscaleErr);
+            }
+          }
+
           try {
-            texture = PIXI.Texture.from(img);
+            texture = PIXI.Texture.from(source);
           } catch {
             texture = PIXI.Texture.from(dataUrl);
           }
@@ -98,33 +121,45 @@ export class ItemManager {
 
     this.createDisplayObject(item, texture);
     this.items.set(id, item);
-    this.updateGroupDisplay();
-    this.notifyChanged();
+    if (!options.skipNotify) {
+      this.updateGroupDisplay();
+      this.notifyChanged();
+    }
     return item;
   }
 
-  async addVideoItem(data) {
+  async addVideoItem(data, options = {}) {
     const id = data.id || generateId("vid");
     const dataUrl = data.dataUrl;
 
     const video = document.createElement("video");
-    video.src = dataUrl;
-    video.loop = true;
+    // CRITICAL: Configure mute attributes BEFORE assigning .src so WebKitGTK's
+    // GStreamer backend does not attempt to construct an audio sink pipeline
+    // (which crashes WebKitWebProcess if autoaudiosink is missing on Linux).
     video.muted = true;
+    video.defaultMuted = true;
+    video.volume = 0;
     video.playsInline = true;
-    video.autoplay = true;
+    video.setAttribute("muted", "");
+    video.setAttribute("playsinline", "");
+    video.loop = true;
     video.crossOrigin = "anonymous";
 
-    await new Promise((resolve) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => resolve();
-      setTimeout(resolve, 1500);
-    });
-
     try {
-      await video.play();
-    } catch {
-      // Autoplay might be muted/blocked; handled gracefully
+      video.src = dataUrl;
+      await new Promise((resolve) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => resolve();
+        setTimeout(resolve, 1500);
+      });
+
+      try {
+        await video.play();
+      } catch {
+        // Autoplay might be muted/blocked; handled gracefully
+      }
+    } catch (e) {
+      console.warn("Video element setup warning:", e);
     }
 
     const width = data.width || video.videoWidth || 640;
@@ -163,8 +198,10 @@ export class ItemManager {
 
     this.createDisplayObject(item, texture);
     this.items.set(id, item);
-    this.updateGroupDisplay();
-    this.notifyChanged();
+    if (!options.skipNotify) {
+      this.updateGroupDisplay();
+      this.notifyChanged();
+    }
     return item;
   }
 
