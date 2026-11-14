@@ -19,6 +19,11 @@ export class ItemManager {
     this.groupGraphics = new PIXI.Graphics();
     this.groupGraphics.eventMode = "none";
     this.canvasContainer.addChild(this.groupGraphics);
+    this.groupBounds = new Map(); // gid -> { card, tab, group }
+    this.groupLabels = new Map(); // gid -> PIXI.Text
+    this.groupTextContainer = new PIXI.Container();
+    this.groupTextContainer.eventMode = "none";
+    this.canvasContainer.addChild(this.groupTextContainer);
     this.nextZIndex = 1;
     this.onItemsChanged = null;
   }
@@ -96,6 +101,56 @@ export class ItemManager {
       }
     });
 
+    let animatedSprite = null;
+    const isGif =
+      data.filename?.toLowerCase().endsWith(".gif") ||
+      Boolean(data.dataUrl?.startsWith("data:image/gif"));
+
+    if (
+      isGif &&
+      typeof window !== "undefined" &&
+      typeof window.ImageDecoder !== "undefined"
+    ) {
+      try {
+        const response = await fetch(dataUrl);
+        const buffer = await response.arrayBuffer();
+        const decoder = new window.ImageDecoder({
+          data: buffer,
+          type: "image/gif",
+        });
+        await decoder.tracks.ready;
+        const track = decoder.tracks.selectedTrack;
+        if (track && track.frameCount > 1) {
+          const frames = [];
+          for (let i = 0; i < track.frameCount; i++) {
+            const { image: videoFrame } = await decoder.decode({
+              frameIndex: i,
+            });
+            const canvas = document.createElement("canvas");
+            canvas.width = videoFrame.displayWidth || width;
+            canvas.height = videoFrame.displayHeight || height;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(videoFrame, 0, 0);
+            }
+            const durationMs = (videoFrame.duration || 100000) / 1000;
+            videoFrame.close();
+            const frameTex = PIXI.Texture.from(canvas);
+            frames.push({ texture: frameTex, time: durationMs });
+          }
+          if (frames.length > 0) {
+            animatedSprite = new PIXI.AnimatedSprite(frames);
+            animatedSprite.play();
+          }
+        }
+      } catch (gifErr) {
+        console.warn(
+          "Could not decode animated GIF frames, using static frame:",
+          gifErr,
+        );
+      }
+    }
+
     const item = {
       id,
       type: data.type || "image",
@@ -115,6 +170,7 @@ export class ItemManager {
       groupId: data.groupId || null,
       container: null,
       sprite: null,
+      animatedSprite,
       selectionOutline: null,
       selected: false,
     };
@@ -145,12 +201,24 @@ export class ItemManager {
     video.loop = true;
     video.crossOrigin = "anonymous";
 
+    const mime =
+      data.mimeType ||
+      (/\.webm$/i.test(data.filename) ? "video/webm" : "video/mp4");
+    if (typeof video.canPlayType === "function") {
+      const support = video.canPlayType(mime);
+      if (support === "") {
+        console.warn(
+          `Video format "${mime}" not natively supported by WebKitGTK media engine.`,
+        );
+      }
+    }
+
     try {
       video.src = dataUrl;
       await new Promise((resolve) => {
         video.onloadedmetadata = () => resolve();
         video.onerror = () => resolve();
-        setTimeout(resolve, 1500);
+        setTimeout(resolve, 2000);
       });
 
       try {
@@ -167,9 +235,23 @@ export class ItemManager {
 
     let texture;
     try {
-      texture = PIXI.Texture.from(video);
+      const videoSource = new PIXI.VideoSource({
+        resource: video,
+        autoLoad: true,
+        autoPlay: true,
+      });
+      try {
+        await videoSource.load();
+      } catch (loadErr) {
+        console.warn("VideoSource load wait warning:", loadErr);
+      }
+      texture = new PIXI.Texture({ source: videoSource });
     } catch {
-      texture = PIXI.Texture.WHITE;
+      try {
+        texture = PIXI.Texture.from(video);
+      } catch {
+        texture = PIXI.Texture.WHITE;
+      }
     }
 
     const item = {
@@ -196,6 +278,12 @@ export class ItemManager {
       selected: false,
     };
 
+    video.addEventListener("loadeddata", () => {
+      if (item.sprite) {
+        this.applyTransform(item);
+      }
+    });
+
     this.createDisplayObject(item, texture);
     this.items.set(id, item);
     if (!options.skipNotify) {
@@ -205,7 +293,7 @@ export class ItemManager {
     return item;
   }
 
-  addTextItem(data) {
+  addTextItem(data, options = {}) {
     const id = data.id || generateId("text");
     const textContent = data.text || "Double click to edit note...";
     const fontSize = data.fontSize || 20;
@@ -240,8 +328,10 @@ export class ItemManager {
 
     this.createTextDisplayObject(item);
     this.items.set(id, item);
-    this.updateGroupDisplay();
-    this.notifyChanged();
+    if (!options.skipNotify) {
+      this.updateGroupDisplay();
+      this.notifyChanged();
+    }
     return item;
   }
 
@@ -251,14 +341,19 @@ export class ItemManager {
     container.rotation = item.rotation;
     container.zIndex = item.zIndex;
 
-    const sprite = new PIXI.Sprite(texture);
-    sprite.width = item.width;
-    sprite.height = item.height;
+    const sprite = item.animatedSprite || new PIXI.Sprite(texture);
     // Set anchor to center for natural pivot during scale & rotate
     sprite.anchor.set(0.5, 0.5);
+
+    const tex = sprite.texture;
+    const texW = tex && tex.width > 0 ? tex.width : item.width || 400;
+    const texH = tex && tex.height > 0 ? tex.height : item.height || 300;
+    const baseScaleX = item.width / texW;
+    const baseScaleY = item.height / texH;
+
     sprite.scale.set(
-      item.scaleX * (item.flipH ? -1 : 1),
-      item.scaleY * (item.flipV ? -1 : 1),
+      baseScaleX * item.scaleX * (item.flipH ? -1 : 1),
+      baseScaleY * item.scaleY * (item.flipV ? -1 : 1),
     );
 
     const selectionOutline = new PIXI.Graphics();
@@ -399,9 +494,14 @@ export class ItemManager {
         item.scaleY * (item.flipV ? -1 : 1),
       );
     } else if (item.sprite) {
+      const tex = item.sprite.texture;
+      const texW = tex && tex.width > 0 ? tex.width : item.width || 400;
+      const texH = tex && tex.height > 0 ? tex.height : item.height || 300;
+      const baseScaleX = item.width / texW;
+      const baseScaleY = item.height / texH;
       item.sprite.scale.set(
-        item.scaleX * (item.flipH ? -1 : 1),
-        item.scaleY * (item.flipV ? -1 : 1),
+        baseScaleX * item.scaleX * (item.flipH ? -1 : 1),
+        baseScaleY * item.scaleY * (item.flipV ? -1 : 1),
       );
     }
     this.updateSelectionOutline(item);
@@ -541,10 +641,28 @@ export class ItemManager {
 
   updateGroupDisplay() {
     this.groupGraphics.clear();
+    this.groupBounds.clear();
+
+    const activeGids = new Set(this.groups.keys());
+    for (const [gid, textObj] of this.groupLabels) {
+      if (!activeGids.has(gid)) {
+        this.groupTextContainer.removeChild(textObj);
+        textObj.destroy();
+        this.groupLabels.delete(gid);
+      }
+    }
 
     for (const [gid, group] of this.groups) {
       const groupItems = this.getGroupItems(gid);
-      if (groupItems.length === 0) continue;
+      if (groupItems.length === 0) {
+        if (this.groupLabels.has(gid)) {
+          const t = this.groupLabels.get(gid);
+          this.groupTextContainer.removeChild(t);
+          t.destroy();
+          this.groupLabels.delete(gid);
+        }
+        continue;
+      }
 
       let minX = Infinity;
       let minY = Infinity;
@@ -575,17 +693,58 @@ export class ItemManager {
       });
 
       // Group title header tab
-      const tabWidth = Math.min(gw, 140);
+      const title = group.title || "Group";
+      let textObj = this.groupLabels.get(gid);
+      if (!textObj) {
+        textObj = new PIXI.Text({
+          text: title,
+          style: {
+            fontFamily: "Inter, sans-serif",
+            fontSize: 12,
+            fontWeight: "bold",
+            fill: 0xffffff,
+          },
+        });
+        this.groupTextContainer.addChild(textObj);
+        this.groupLabels.set(gid, textObj);
+      } else {
+        textObj.text = title;
+      }
+
+      const tabPaddingH = 10;
+      const textWidth = textObj.width || 40;
+      const tabWidth = Math.min(gw, Math.max(80, textWidth + tabPaddingH * 2));
       const tabHeight = 24;
-      this.groupGraphics.roundRect(
-        gx,
-        gy - tabHeight + 4,
-        tabWidth,
-        tabHeight,
-        6,
-      );
-      this.groupGraphics.fill({ color: group.color, alpha: 0.8 });
+      const tabX = gx;
+      const tabY = gy - tabHeight + 4;
+
+      this.groupGraphics.roundRect(tabX, tabY, tabWidth, tabHeight, 6);
+      this.groupGraphics.fill({ color: group.color, alpha: 0.85 });
+
+      textObj.position.set(tabX + tabPaddingH, tabY + 4);
+      textObj.visible = true;
+
+      this.groupBounds.set(gid, {
+        card: { x: gx, y: gy, width: gw, height: gh },
+        tab: { x: tabX, y: tabY, width: tabWidth, height: tabHeight },
+        group,
+      });
     }
+  }
+
+  hitTestGroupTab(canvasPos) {
+    for (const [gid, bounds] of this.groupBounds) {
+      const tab = bounds.tab;
+      if (
+        canvasPos.x >= tab.x &&
+        canvasPos.x <= tab.x + tab.width &&
+        canvasPos.y >= tab.y &&
+        canvasPos.y <= tab.y + tab.height
+      ) {
+        return { gid, group: bounds.group, bounds };
+      }
+    }
+    return null;
   }
 
   // ---------------- ALIGNMENT & SORTING (BeeRef Parity) ----------------
@@ -852,6 +1011,15 @@ export class ItemManager {
     this.items.clear();
     this.groups.clear();
     this.groupGraphics.clear();
+    if (this.groupLabels) {
+      for (const text of this.groupLabels.values()) {
+        text.destroy();
+      }
+      this.groupLabels.clear();
+    }
+    if (this.groupBounds) {
+      this.groupBounds.clear();
+    }
     this.nextZIndex = 1;
     this.notifyChanged();
   }

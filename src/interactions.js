@@ -30,6 +30,8 @@ export class InteractionController {
     this.activeGizmoAction = null; // 'scale-tl', 'scale-tr', 'scale-br', 'scale-bl', 'rotate'
     this.gizmoStartMouse = { x: 0, y: 0 };
     this.gizmoItemStartState = null;
+    this.gizmoMultiStartState = null;
+    this.selectionBounds = null;
 
     // Callbacks
     this.onSelectionChanged = null;
@@ -59,15 +61,35 @@ export class InteractionController {
       const screenY = e.clientY;
       const canvasPos = this.viewport.screenToCanvas(screenX, screenY);
 
-      // Check if clicked on Gizmo handle of a single selected item
-      if (this.selectedItems.size === 1) {
-        const item = Array.from(this.selectedItems)[0];
-        const hitHandle = this.hitTestGizmoHandles(item, canvasPos);
+      // Check if clicked on Gizmo handle (single or multi-selection)
+      if (this.selectedItems.size > 0) {
+        const hitHandle = this.hitTestGizmoHandles(canvasPos);
         if (hitHandle) {
-          this.startGizmoAction(hitHandle, canvasPos, item);
+          this.startGizmoAction(hitHandle, canvasPos);
           e.preventDefault();
           return;
         }
+      }
+
+      // Check if clicked on a Group Header Tab
+      const hitGroup = this.itemManager.hitTestGroupTab(canvasPos);
+      if (hitGroup) {
+        const groupItems = this.itemManager.getGroupItems(hitGroup.gid);
+        this.clearSelection();
+        for (const it of groupItems) {
+          this.selectedItems.add(it);
+        }
+        this.updateGizmo();
+
+        this.hasDraggedItems = false;
+        this.isDraggingItems = true;
+        this.dragStartMouse = { ...canvasPos };
+        this.dragStartPositions.clear();
+        for (const item of this.selectedItems) {
+          this.dragStartPositions.set(item.id, { x: item.x, y: item.y });
+        }
+        e.preventDefault();
+        return;
       }
 
       // Check if clicked on an item
@@ -118,7 +140,10 @@ export class InteractionController {
       const canvasPos = this.viewport.screenToCanvas(e.clientX, e.clientY);
 
       // Handle Gizmo scaling / rotation
-      if (this.activeGizmoAction && this.gizmoItemStartState) {
+      if (
+        this.activeGizmoAction &&
+        (this.gizmoItemStartState || this.gizmoMultiStartState)
+      ) {
         this.handleGizmoDrag(canvasPos);
         return;
       }
@@ -148,15 +173,26 @@ export class InteractionController {
         return;
       }
 
-      // Update hover cursor for gizmo handles if 1 item selected
-      if (this.selectedItems.size === 1 && !this.viewport.isPanning) {
-        const item = Array.from(this.selectedItems)[0];
-        const handle = this.hitTestGizmoHandles(item, canvasPos);
+      // Update hover cursor for gizmo handles
+      if (this.selectedItems.size > 0 && !this.viewport.isPanning) {
+        const handle = this.hitTestGizmoHandles(canvasPos);
         if (handle) {
           document.body.style.cursor = this.getCursorForHandle(handle);
-        } else if (!this.viewport.isSpacePressed) {
-          document.body.style.cursor = "default";
+          return;
         }
+      }
+
+      // Hover cursor for group tab
+      if (
+        !this.viewport.isPanning &&
+        this.itemManager.hitTestGroupTab(canvasPos)
+      ) {
+        document.body.style.cursor = "pointer";
+        return;
+      }
+
+      if (!this.viewport.isSpacePressed && !this.viewport.isPanning) {
+        document.body.style.cursor = "default";
       }
     });
 
@@ -164,6 +200,8 @@ export class InteractionController {
       if (this.activeGizmoAction) {
         this.activeGizmoAction = null;
         this.gizmoItemStartState = null;
+        this.gizmoMultiStartState = null;
+        this.itemManager.updateGroupDisplay();
         this.itemManager.notifyChanged();
         this.updateGizmo();
       }
@@ -189,11 +227,22 @@ export class InteractionController {
       }
     });
 
-    // Double-click on text note to edit
+    // Double-click on group tab to rename, text note to edit, or empty canvas to create note
     canvasEl.addEventListener("dblclick", (e) => {
       const canvasPos = this.viewport.screenToCanvas(e.clientX, e.clientY);
-      const clickedItem = this.hitTestItem(canvasPos);
+      const hitGroup = this.itemManager.hitTestGroupTab(canvasPos);
+      if (hitGroup) {
+        const currentTitle = hitGroup.group.title || "Group";
+        const newTitle = window.prompt("Rename group:", currentTitle);
+        if (newTitle !== null && newTitle.trim() !== "") {
+          hitGroup.group.title = newTitle.trim();
+          this.itemManager.updateGroupDisplay();
+          this.itemManager.notifyChanged();
+        }
+        return;
+      }
 
+      const clickedItem = this.hitTestItem(canvasPos);
       if (clickedItem && clickedItem.type === "text") {
         if (this.onTextEditRequested) {
           this.onTextEditRequested(clickedItem);
@@ -325,10 +374,14 @@ export class InteractionController {
     this.gizmoGraphics.clear();
 
     if (this.selectedItems.size === 0) {
+      this.selectionBounds = null;
       return;
     }
 
-    // Multi-selection: draw collective bounding box frame
+    const handleSize = 10 / this.viewport.zoom;
+    const rotateOffset = 30 / this.viewport.zoom;
+
+    // Multi-selection: draw collective bounding box frame and 4 corner handles
     if (this.selectedItems.size > 1) {
       let minX = Infinity;
       let minY = Infinity;
@@ -344,15 +397,41 @@ export class InteractionController {
         maxY = Math.max(maxY, b.y + b.height);
       }
 
-      if (minX !== Infinity) {
-        const pad = 4 / this.viewport.zoom;
-        const w = maxX - minX + pad * 2;
-        const h = maxY - minY + pad * 2;
-        this.gizmoGraphics.rect(minX - pad, minY - pad, w, h);
+      if (minX === Infinity) {
+        this.selectionBounds = null;
+        return;
+      }
+
+      const w = maxX - minX;
+      const h = maxY - minY;
+      this.selectionBounds = { x: minX, y: minY, width: w, height: h };
+
+      this.gizmoGraphics.rect(minX, minY, w, h);
+      this.gizmoGraphics.stroke({
+        color: 0x38bdf8,
+        width: 1.5 / this.viewport.zoom,
+        alpha: 0.85,
+      });
+
+      // 4 Corner handles for collective scaling
+      const corners = [
+        { x: minX, y: minY }, // TL
+        { x: maxX, y: minY }, // TR
+        { x: maxX, y: maxY }, // BR
+        { x: minX, y: maxY }, // BL
+      ];
+
+      for (const pt of corners) {
+        this.gizmoGraphics.rect(
+          pt.x - handleSize / 2,
+          pt.y - handleSize / 2,
+          handleSize,
+          handleSize,
+        );
+        this.gizmoGraphics.fill({ color: 0xffffff });
         this.gizmoGraphics.stroke({
-          color: 0x38bdf8,
+          color: 0x0284c7,
           width: 1.5 / this.viewport.zoom,
-          alpha: 0.8,
         });
       }
       return;
@@ -366,12 +445,12 @@ export class InteractionController {
       item.container.destroyed
     ) {
       this.selectedItems.delete(item);
+      this.selectionBounds = null;
       return;
     }
 
     const b = this.itemManager.getItemBounds(item);
-    const handleSize = 10 / this.viewport.zoom;
-    const rotateOffset = 30 / this.viewport.zoom;
+    this.selectionBounds = { ...b };
 
     // Outer bounding border
     this.gizmoGraphics.rect(b.x, b.y, b.width, b.height);
@@ -424,16 +503,21 @@ export class InteractionController {
     });
   }
 
-  hitTestGizmoHandles(item, canvasPos) {
-    const b = this.itemManager.getItemBounds(item);
+  hitTestGizmoHandles(canvasPos) {
+    if (!this.selectionBounds || this.selectedItems.size === 0) return null;
+    const b = this.selectionBounds;
     const threshold = 16 / this.viewport.zoom;
     const rotateOffset = 30 / this.viewport.zoom;
 
-    // Rotation handle
-    const topCenterX = b.x + b.width / 2;
-    const rotY = b.y - rotateOffset;
-    if (Math.hypot(canvasPos.x - topCenterX, canvasPos.y - rotY) <= threshold) {
-      return "rotate";
+    // Rotation handle (single item only)
+    if (this.selectedItems.size === 1) {
+      const topCenterX = b.x + b.width / 2;
+      const rotY = b.y - rotateOffset;
+      if (
+        Math.hypot(canvasPos.x - topCenterX, canvasPos.y - rotY) <= threshold
+      ) {
+        return "rotate";
+      }
     }
 
     // Corner handles
@@ -473,22 +557,80 @@ export class InteractionController {
     }
   }
 
-  startGizmoAction(handle, mouseCanvasPos, item) {
+  startGizmoAction(handle, mouseCanvasPos) {
     this.activeGizmoAction = handle;
     this.gizmoStartMouse = { ...mouseCanvasPos };
-    this.gizmoItemStartState = {
-      x: item.x,
-      y: item.y,
-      width: item.width,
-      height: item.height,
-      scaleX: item.scaleX,
-      scaleY: item.scaleY,
-      rotation: item.rotation,
-      itemBounds: this.itemManager.getItemBounds(item),
-    };
+
+    if (this.selectedItems.size === 1) {
+      const item = Array.from(this.selectedItems)[0];
+      this.gizmoItemStartState = {
+        x: item.x,
+        y: item.y,
+        width: item.width,
+        height: item.height,
+        scaleX: item.scaleX,
+        scaleY: item.scaleY,
+        rotation: item.rotation,
+        itemBounds: this.itemManager.getItemBounds(item),
+      };
+      this.gizmoMultiStartState = null;
+    } else {
+      const b = this.selectionBounds;
+      let pivot = { x: b.x, y: b.y };
+      if (handle === "scale-br") {
+        pivot = { x: b.x, y: b.y }; // TL
+      } else if (handle === "scale-bl") {
+        pivot = { x: b.x + b.width, y: b.y }; // TR
+      } else if (handle === "scale-tr") {
+        pivot = { x: b.x, y: b.y + b.height }; // BL
+      } else if (handle === "scale-tl") {
+        pivot = { x: b.x + b.width, y: b.y + b.height }; // BR
+      }
+
+      this.gizmoMultiStartState = {
+        bounds: { ...b },
+        pivot,
+        initialDist: Math.hypot(
+          mouseCanvasPos.x - pivot.x,
+          mouseCanvasPos.y - pivot.y,
+        ),
+        items: Array.from(this.selectedItems).map((it) => ({
+          item: it,
+          x: it.x,
+          y: it.y,
+          scaleX: it.scaleX,
+          scaleY: it.scaleY,
+        })),
+      };
+      this.gizmoItemStartState = null;
+    }
   }
 
   handleGizmoDrag(currentPos) {
+    if (this.gizmoMultiStartState) {
+      const { pivot, initialDist, items } = this.gizmoMultiStartState;
+      if (initialDist <= 0) return;
+
+      const currentDist = Math.hypot(
+        currentPos.x - pivot.x,
+        currentPos.y - pivot.y,
+      );
+      const factor = Math.max(0.05, currentDist / initialDist);
+
+      for (const entry of items) {
+        const newX = pivot.x + (entry.x - pivot.x) * factor;
+        const newY = pivot.y + (entry.y - pivot.y) * factor;
+        this.itemManager.setItemPosition(entry.item, newX, newY);
+        this.itemManager.setItemScale(
+          entry.item,
+          entry.scaleX * factor,
+          entry.scaleY * factor,
+        );
+      }
+      this.updateGizmo();
+      return;
+    }
+
     const item = Array.from(this.selectedItems)[0];
     if (!item || !this.gizmoItemStartState) return;
 
@@ -503,7 +645,7 @@ export class InteractionController {
       return;
     }
 
-    // Scaling
+    // Single item scaling
     const initialDist = Math.hypot(
       this.gizmoStartMouse.x - item.x,
       this.gizmoStartMouse.y - item.y,

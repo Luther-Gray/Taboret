@@ -12,6 +12,12 @@ fn main() {
                 std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
             }
         }
+        // Silence Mesa DRI2 probe warnings when running under proprietary NVIDIA drivers
+        if std::env::var("EGL_LOG_LEVEL").is_err() {
+            unsafe {
+                std::env::set_var("EGL_LOG_LEVEL", "fatal");
+            }
+        }
     }
 
     app_lib::run();

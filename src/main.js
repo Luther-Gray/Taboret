@@ -87,22 +87,36 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
       ui.setBoardName(name);
 
       // Restore items
-      for (const itemData of boardData.items || []) {
+      const itemsToLoad = boardData.items || [];
+      for (let i = 0; i < itemsToLoad.length; i++) {
+        const itemData = itemsToLoad[i];
         const fileKey = itemData.file;
         const dataUrl =
           mediaMap.get(fileKey) ||
           mediaMap.get(fileKey.replace(/^media\//, ""));
 
         if (itemData.type === "text") {
-          itemManager.addTextItem(itemData);
+          itemManager.addTextItem(itemData, { skipNotify: true });
         } else if (itemData.type === "video") {
           if (dataUrl) {
-            await itemManager.addVideoItem({ ...itemData, dataUrl });
+            await itemManager.addVideoItem(
+              { ...itemData, dataUrl },
+              { skipNotify: true },
+            );
           }
         } else {
           if (dataUrl) {
-            await itemManager.addImageItem({ ...itemData, dataUrl });
+            await itemManager.addImageItem(
+              { ...itemData, dataUrl },
+              { skipNotify: true },
+            );
           }
+        }
+
+        // Periodic yield every 25 items so the browser/WebKitGTK stays responsive
+        // on large boards (e.g. 500+ items) without freezing the UI loop
+        if (i > 0 && i % 25 === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
       }
 
@@ -111,6 +125,7 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
         itemManager.groups.set(group.id, group);
       }
       itemManager.updateGroupDisplay();
+      itemManager.notifyChanged();
 
       // Restore viewport
       if (boardData.pan && boardData.zoom) {
