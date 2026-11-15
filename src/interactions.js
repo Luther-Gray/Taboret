@@ -953,6 +953,10 @@ export class InteractionController {
 
     try {
       for (let i = 0; i < files.length; i++) {
+        if (progress && progress.isCancelled) {
+          break;
+        }
+
         const file = files[i];
         const displayName =
           typeof file === "string"

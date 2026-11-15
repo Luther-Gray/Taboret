@@ -120,6 +120,7 @@ export class UIManager {
     }, 2500);
 
     const handle = {
+      isCancelled: false,
       update: (current, newTotal, subtitle) => {
         lastActivity = Date.now();
         const tot = newTotal !== undefined ? newTotal : total;
@@ -158,6 +159,7 @@ export class UIManager {
         }, 3000);
       },
       remove: () => {
+        handle.isCancelled = true;
         clearInterval(stallTimer);
         this.activeProgressToasts.delete(handle);
         toast.classList.remove("toast-show");
@@ -245,11 +247,7 @@ export class UIManager {
     bar.innerHTML = `
       <div class="top-bar-left">
         <div class="logo">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="3"></rect>
-            <path d="M3 9h18"></path>
-            <path d="M9 21V9"></path>
-          </svg>
+          <img src="/favicon.png" width="20" height="20" alt="Taboret" style="border-radius:4px;object-fit:contain;" />
           <span class="logo-title">Taboret</span>
         </div>
         <div class="board-name-wrapper">

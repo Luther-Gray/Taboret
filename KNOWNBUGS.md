@@ -52,6 +52,12 @@
   1. Path traversal guard in `save_board_to_folder` sanitizes destination file names.
   2. Added `.avif`, `.mov`, `.m4v`, `.ogv` to Rust MIME detection.
 - **Inline Group Renaming** — Fixed in `ui.js`, `interactions.js`, and `main.js`: replaced synchronous `window.prompt()` with an inline styled `<input>` overlay positioned directly over the group tab with Enter to commit and Escape to cancel.
+- **App hero icon & brand assets** — Fixed: generated full cross-platform icon suites (`32x32`, `64x64`, `128x128`, `128x128@2x`, `icon.png`, `icon.ico`, `icon.icns`, StoreLogo, Square logos, mobile mipmaps) using `pnpm tauri icon src-tauri/icons/TaboretIcon.png`. Integrated `favicon.png` and updated UI branding in `src/ui.js`.
+- **Toast cancel button & cancellation handling** — Fixed in `public/style.css`, `ui.js`, `interactions.js`, and `main.js`:
+  1. Added `pointer-events: auto;` to `.toast` so dismiss ("×") clicks register despite `.toast-container { pointer-events: none; }`.
+  2. Clicking "×" sets `handle.isCancelled = true`.
+  3. `interactions.js` breaks out of `importFileList` and `main.js` breaks out of `onOpenBoard` immediately when cancelled.
+- **Text & group name label crispness (zoom / resize blurriness)** — Fixed in `items.js`: set `resolution: 3` on `PIXI.Text` in both `createTextDisplayObject` and `updateGroupDisplay`, supersampling text rendering so notes and group labels remain crisp on deep canvas zoom and container scaling.
 
 ---
 
@@ -75,14 +81,6 @@
 
 ---
 
-### 🟡 App hero icon configuration
-- **Status**: Not implemented. Low priority.
-- **Location**: `src-tauri/icons/`
-- **Issue**: Place a 1024×1024 `icon.png` in `src-tauri/icons/` and run `pnpm tauri icon`.
-- **Priority**: Low.
-
----
-
 ## TODO: Video Playback (Postponed for Dedicated Session)
 - **Status**: Postponed.
 - **Context**: In WebKitGTK under Wayland + NVIDIA, `<video>` element frame extraction to WebGL requires custom canvas blitting (`src/video.js`) and asset protocol streaming (`convertFileSrc`). Postponed to avoid complex codec tests until core data integrity and UI stability are complete.
@@ -90,12 +88,8 @@
 ---
 
 ## FUTURE (Planned Enhancements)
+- **Group color customization** — Custom color picker for group background, border, and tab header.
 - **Dot grid toggle** — Toggle between lines, dots, and none.
 - **Shift-select range** — Click item A, Shift-click item B selects in reading order.
 - **Multi-item rotation** — Rotate collective multi-selection around collective center.
 - **Undo / Redo stack** — History stack for transform, move, and edit operations.
-
-# UX
-- `Click X to Cancel` but cannot click X when the import hangs.
-- Text (And Group Name Label) is blurry when zooming in or when resizing element to make it bigger
-- Should add feature to change the *color* of a Group (or other UI things as well)

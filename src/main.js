@@ -125,7 +125,10 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
           : null;
 
       for (let i = 0; i < itemsToLoad.length; i++) {
-        if (currentGen !== openGeneration) {
+        if (
+          currentGen !== openGeneration ||
+          (progress && progress.isCancelled)
+        ) {
           if (progress) progress.remove();
           return;
         }

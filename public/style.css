@@ -461,6 +461,7 @@ kbd {
 }
 
 .toast {
+  pointer-events: auto;
   background: rgba(24, 24, 28, 0.95);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);

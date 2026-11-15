@@ -481,6 +481,7 @@ export class ItemManager {
     const bgCard = new PIXI.Graphics();
     const textObj = new PIXI.Text({
       text: item.text,
+      resolution: 3,
       style: {
         fontFamily: "Inter, sans-serif",
         fontSize: item.fontSize,
@@ -856,6 +857,7 @@ export class ItemManager {
       if (!textObj) {
         textObj = new PIXI.Text({
           text: title,
+          resolution: 3,
           style: {
             fontFamily: "Inter, sans-serif",
             fontSize: 12,
