@@ -268,7 +268,7 @@ export async function saveBoard(folderHandleOrPath, boardData, mediaItems) {
           : m.filename;
         return {
           filename,
-          data_url: m.dataUrl || null,
+          data_url: m.isSaved ? null : m.dataUrl || null,
           source_path: m.sourcePath || null,
         };
       });

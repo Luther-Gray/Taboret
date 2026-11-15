@@ -24,6 +24,9 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
   // Board State
   let currentFolder = null;
   let isModified = false;
+  let openGeneration = 0;
+
+  ui.canShowContextMenu = () => !viewport.isPanning && !viewport.hasPanned;
 
   const markModified = (modified = true) => {
     isModified = modified;
@@ -45,8 +48,30 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
     });
   };
 
+  interactions.onGroupRenameRequested = (
+    screenX,
+    screenY,
+    width,
+    height,
+    currentTitle,
+    onCommit,
+  ) => {
+    ui.showInlineRename(
+      screenX,
+      screenY,
+      width,
+      height,
+      currentTitle,
+      onCommit,
+    );
+  };
+
   interactions.onNotification = (msg, type) => {
     ui.showToast(msg, type);
+  };
+
+  interactions.onProgress = (title, total) => {
+    return ui.showLoadingProgress(title, total);
   };
 
   // ---------------- UI ACTIONS ----------------
@@ -60,6 +85,8 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
         return;
       }
     }
+    openGeneration++;
+    ui.dismissAllProgress();
     itemManager.clear();
     viewport.resetView();
     currentFolder = null;
@@ -69,12 +96,16 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
   };
 
   ui.onOpenBoard = async () => {
+    let progress = null;
+    const currentGen = ++openGeneration;
     try {
       const folder = await pickFolder();
-      if (!folder) return;
+      if (!folder || currentGen !== openGeneration) return;
 
+      ui.dismissAllProgress();
       ui.showToast("Opening Mood Board...", "info");
       const { boardData, mediaMap } = await readBoard(folder);
+      if (currentGen !== openGeneration) return;
       currentFolder = folder;
 
       // Clear current canvas
@@ -88,29 +119,62 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
 
       // Restore items
       const itemsToLoad = boardData.items || [];
-      for (let i = 0; i < itemsToLoad.length; i++) {
-        const itemData = itemsToLoad[i];
-        const fileKey = itemData.file;
-        const dataUrl =
-          mediaMap.get(fileKey) ||
-          mediaMap.get(fileKey.replace(/^media\//, ""));
+      progress =
+        itemsToLoad.length > 5
+          ? ui.showLoadingProgress(`Opening "${name}"...`, itemsToLoad.length)
+          : null;
 
-        if (itemData.type === "text") {
-          itemManager.addTextItem(itemData, { skipNotify: true });
-        } else if (itemData.type === "video") {
-          if (dataUrl) {
-            await itemManager.addVideoItem(
-              { ...itemData, dataUrl },
+      for (let i = 0; i < itemsToLoad.length; i++) {
+        if (currentGen !== openGeneration) {
+          if (progress) progress.remove();
+          return;
+        }
+
+        const itemData = itemsToLoad[i];
+        const fileKey = itemData.file || itemData.filename || null;
+        const dataUrl = fileKey
+          ? mediaMap.get(fileKey) ||
+            mediaMap.get(fileKey.replace(/^media\//, ""))
+          : null;
+
+        const displayFile = fileKey
+          ? fileKey.split("/").pop()
+          : `Item ${i + 1}`;
+        if (progress) {
+          progress.update(i, itemsToLoad.length, `Loading "${displayFile}"...`);
+        }
+
+        try {
+          if (itemData.type === "text") {
+            itemManager.addTextItem(
+              { ...itemData, filename: fileKey },
               { skipNotify: true },
             );
+          } else if (itemData.type === "video") {
+            if (dataUrl) {
+              await itemManager.addVideoItem(
+                { ...itemData, filename: fileKey, dataUrl },
+                { skipNotify: true },
+              );
+            }
+          } else {
+            if (dataUrl) {
+              await itemManager.addImageItem(
+                { ...itemData, filename: fileKey, dataUrl },
+                { skipNotify: true },
+              );
+            }
           }
-        } else {
-          if (dataUrl) {
-            await itemManager.addImageItem(
-              { ...itemData, dataUrl },
-              { skipNotify: true },
-            );
-          }
+        } catch (itemErr) {
+          console.warn(`Failed loading item ${fileKey}:`, itemErr);
+        }
+
+        if (progress) {
+          progress.update(
+            i + 1,
+            itemsToLoad.length,
+            `Loaded "${displayFile}" (${i + 1}/${itemsToLoad.length})`,
+          );
         }
 
         // Periodic yield every 25 items so the browser/WebKitGTK stays responsive
@@ -119,6 +183,8 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
           await new Promise((resolve) => setTimeout(resolve, 0));
         }
       }
+
+      if (currentGen !== openGeneration) return;
 
       // Restore groups
       for (const group of boardData.groups || []) {
@@ -134,11 +200,21 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
         viewport.resetView(itemManager.getOverallBounds());
       }
 
+      itemManager.markAllSaved();
       markModified(false);
-      ui.showToast(`Loaded "${name}" from folder`, "success");
+      if (progress) {
+        progress.finish(`Loaded "${name}" (${itemsToLoad.length} items)`);
+      } else {
+        ui.showToast(`Loaded "${name}" from folder`, "success");
+      }
     } catch (err) {
-      console.error("Error opening board:", err);
-      ui.showToast(`Failed to open board: ${err.message}`, "error");
+      if (currentGen === openGeneration) {
+        console.error("Error opening board:", err);
+        ui.showToast(`Failed to open board: ${err.message}`, "error");
+        if (progress) {
+          progress.error(`Failed to open: ${err.message}`);
+        }
+      }
     }
   };
 
@@ -151,8 +227,13 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
           ui.showToast("Save cancelled: No folder chosen", "info");
           return;
         }
-        currentFolder = targetFolder;
       }
+
+      const isNewFolder = !currentFolder || targetFolder !== currentFolder;
+      if (isNewFolder) {
+        itemManager.markAllDirty();
+      }
+      currentFolder = targetFolder;
 
       ui.showToast("Saving Mood Board to folder...", "info");
 
@@ -167,6 +248,7 @@ import { pickFolder, pickSaveFolder, readBoard, saveBoard } from "./storage.js";
       const mediaItems = Array.from(itemManager.items.values());
       const result = await saveBoard(targetFolder, boardData, mediaItems);
 
+      itemManager.markAllSaved();
       markModified(false);
       ui.showToast(
         `Board saved successfully (${result.folderPath})`,

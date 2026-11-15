@@ -1,4 +1,6 @@
 import * as PIXI from "pixi.js";
+import { GifReader } from "omggif";
+import { dataUrlToBlob } from "./storage.js";
 
 /**
  * Unique ID generator
@@ -103,49 +105,111 @@ export class ItemManager {
 
     let animatedSprite = null;
     const isGif =
-      data.filename?.toLowerCase().endsWith(".gif") ||
+      data.mimeType === "image/gif" ||
+      Boolean((data.filename || data.file)?.toLowerCase().endsWith(".gif")) ||
       Boolean(data.dataUrl?.startsWith("data:image/gif"));
 
-    if (
-      isGif &&
-      typeof window !== "undefined" &&
-      typeof window.ImageDecoder !== "undefined"
-    ) {
+    if (isGif) {
       try {
-        const response = await fetch(dataUrl);
-        const buffer = await response.arrayBuffer();
-        const decoder = new window.ImageDecoder({
-          data: buffer,
-          type: "image/gif",
-        });
-        await decoder.tracks.ready;
-        const track = decoder.tracks.selectedTrack;
-        if (track && track.frameCount > 1) {
-          const frames = [];
-          for (let i = 0; i < track.frameCount; i++) {
-            const { image: videoFrame } = await decoder.decode({
-              frameIndex: i,
-            });
-            const canvas = document.createElement("canvas");
-            canvas.width = videoFrame.displayWidth || width;
-            canvas.height = videoFrame.displayHeight || height;
-            const ctx = canvas.getContext("2d");
-            if (ctx) {
-              ctx.drawImage(videoFrame, 0, 0);
+        let buffer = null;
+        if (typeof dataUrl === "string" && dataUrl.startsWith("data:")) {
+          try {
+            const commaIdx = dataUrl.indexOf(",");
+            if (commaIdx !== -1) {
+              const b64 = dataUrl.slice(commaIdx + 1);
+              const binaryStr = atob(b64);
+              const len = binaryStr.length;
+              const bytes = new Uint8Array(len);
+              for (let i = 0; i < len; i++) {
+                bytes[i] = binaryStr.charCodeAt(i);
+              }
+              buffer = bytes;
             }
-            const durationMs = (videoFrame.duration || 100000) / 1000;
-            videoFrame.close();
-            const frameTex = PIXI.Texture.from(canvas);
-            frames.push({ texture: frameTex, time: durationMs });
+          } catch {
+            buffer = null;
           }
+        }
+
+        if (!buffer) {
+          const response = await fetch(dataUrl);
+          const arrayBuf = await response.arrayBuffer();
+          buffer = new Uint8Array(arrayBuf);
+        }
+
+        const reader = new GifReader(buffer);
+        const numFrames = reader.numFrames();
+        if (numFrames > 1) {
+          // Cap frames to 120 to protect VRAM against massive GIF files
+          const maxFrames = Math.min(numFrames, 120);
+          const gifW = reader.width;
+          const gifH = reader.height;
+
+          const canvas = document.createElement("canvas");
+          canvas.width = gifW;
+          canvas.height = gifH;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+          const pixelBuffer = new Uint8ClampedArray(gifW * gifH * 4);
+          const frames = [];
+
+          for (let i = 0; i < maxFrames; i++) {
+            const frameInfo = reader.frameInfo(i);
+
+            let disposal3Backup = null;
+            if (frameInfo.disposal === 3 && ctx) {
+              disposal3Backup = ctx.getImageData(0, 0, gifW, gifH);
+            }
+
+            reader.decodeAndBlitFrameRGBA(i, pixelBuffer);
+
+            if (ctx) {
+              const imgData = new ImageData(pixelBuffer, gifW, gifH);
+              ctx.putImageData(imgData, 0, 0);
+
+              const frameCanvas = document.createElement("canvas");
+              frameCanvas.width = gifW;
+              frameCanvas.height = gifH;
+              const fctx = frameCanvas.getContext("2d");
+              if (fctx) {
+                fctx.drawImage(canvas, 0, 0);
+              }
+
+              let delayCs = frameInfo.delay;
+              if (!delayCs || delayCs <= 1) {
+                delayCs = 10;
+              }
+              const durationMs = delayCs * 10;
+
+              // Use Texture.from to ensure clean PixiJS texture caching and source wrapping
+              const frameTex = PIXI.Texture.from(frameCanvas);
+              frames.push({ texture: frameTex, time: durationMs });
+
+              if (frameInfo.disposal === 2) {
+                ctx.clearRect(
+                  frameInfo.x,
+                  frameInfo.y,
+                  frameInfo.width,
+                  frameInfo.height,
+                );
+                const cleared = ctx.getImageData(0, 0, gifW, gifH);
+                pixelBuffer.set(cleared.data);
+              } else if (frameInfo.disposal === 3 && disposal3Backup) {
+                ctx.putImageData(disposal3Backup, 0, 0);
+                pixelBuffer.set(disposal3Backup.data);
+              }
+            }
+          }
+
           if (frames.length > 0) {
             animatedSprite = new PIXI.AnimatedSprite(frames);
             animatedSprite.play();
+            width = width || gifW;
+            height = height || gifH;
           }
         }
       } catch (gifErr) {
         console.warn(
-          "Could not decode animated GIF frames, using static frame:",
+          "Could not decode animated GIF frames with omggif, using static frame:",
           gifErr,
         );
       }
@@ -154,7 +218,7 @@ export class ItemManager {
     const item = {
       id,
       type: data.type || "image",
-      filename: data.filename || `media/image_${Date.now()}.png`,
+      filename: data.filename || data.file || `media/${id}.png`,
       dataUrl,
       sourcePath: data.sourcePath || null,
       x: data.x ?? 0,
@@ -173,6 +237,7 @@ export class ItemManager {
       animatedSprite,
       selectionOutline: null,
       selected: false,
+      isSaved: false,
     };
 
     this.createDisplayObject(item, texture);
@@ -200,6 +265,15 @@ export class ItemManager {
     video.setAttribute("playsinline", "");
     video.loop = true;
     video.crossOrigin = "anonymous";
+    // Attach video invisibly to DOM so WebKitGTK / GStreamer media engine
+    // treats it as an active DOM media element and decodes video frames
+    video.style.position = "fixed";
+    video.style.width = "1px";
+    video.style.height = "1px";
+    video.style.opacity = "0";
+    video.style.pointerEvents = "none";
+    video.style.left = "-9999px";
+    document.body.appendChild(video);
 
     const mime =
       data.mimeType ||
@@ -213,19 +287,25 @@ export class ItemManager {
       }
     }
 
+    let mediaSrc = dataUrl;
+    let blobUrl = null;
+    if (typeof dataUrl === "string" && dataUrl.startsWith("data:")) {
+      try {
+        const blob = dataUrlToBlob(dataUrl);
+        blobUrl = URL.createObjectURL(blob);
+        mediaSrc = blobUrl;
+      } catch (blobErr) {
+        console.warn("Could not create blob URL for video:", blobErr);
+      }
+    }
+
     try {
-      video.src = dataUrl;
+      video.src = mediaSrc;
       await new Promise((resolve) => {
         video.onloadedmetadata = () => resolve();
         video.onerror = () => resolve();
-        setTimeout(resolve, 2000);
+        setTimeout(resolve, 800);
       });
-
-      try {
-        await video.play();
-      } catch {
-        // Autoplay might be muted/blocked; handled gracefully
-      }
     } catch (e) {
       console.warn("Video element setup warning:", e);
     }
@@ -237,8 +317,9 @@ export class ItemManager {
     try {
       const videoSource = new PIXI.VideoSource({
         resource: video,
-        autoLoad: true,
+        autoLoad: false,
         autoPlay: true,
+        updateFPS: 30,
       });
       try {
         await videoSource.load();
@@ -258,7 +339,8 @@ export class ItemManager {
       id,
       type: "video",
       videoElement: video,
-      filename: data.filename || `media/video_${Date.now()}.mp4`,
+      blobUrl,
+      filename: data.filename || data.file || `media/${id}.mp4`,
       dataUrl,
       sourcePath: data.sourcePath || null,
       x: data.x ?? 0,
@@ -276,9 +358,17 @@ export class ItemManager {
       sprite: null,
       selectionOutline: null,
       selected: false,
+      isSaved: false,
     };
 
     video.addEventListener("loadeddata", () => {
+      if (!data.width && video.videoWidth > 0) {
+        item.width = video.videoWidth;
+        item.height = video.videoHeight;
+      }
+      if (item.sprite && item.sprite.texture && item.sprite.texture.source) {
+        item.sprite.texture.source.update();
+      }
       if (item.sprite) {
         this.applyTransform(item);
       }
@@ -307,7 +397,7 @@ export class ItemManager {
       fontSize,
       textColor,
       bgColor,
-      filename: `note_${id}.txt`,
+      filename: data.filename || data.file || `note_${id}.txt`,
       x: data.x ?? 0,
       y: data.y ?? 0,
       width: data.width || 260,
@@ -324,6 +414,7 @@ export class ItemManager {
       bgCard: null,
       selectionOutline: null,
       selected: false,
+      isSaved: false,
     };
 
     this.createTextDisplayObject(item);
@@ -346,8 +437,16 @@ export class ItemManager {
     sprite.anchor.set(0.5, 0.5);
 
     const tex = sprite.texture;
-    const texW = tex && tex.width > 0 ? tex.width : item.width || 400;
-    const texH = tex && tex.height > 0 ? tex.height : item.height || 300;
+    let texW = tex && tex.width > 0 ? tex.width : 0;
+    let texH = tex && tex.height > 0 ? tex.height : 0;
+    if (item.type === "video") {
+      if (texW <= 1 && item.videoElement && item.videoElement.videoWidth > 0) {
+        texW = item.videoElement.videoWidth;
+        texH = item.videoElement.videoHeight;
+      }
+    }
+    if (!texW) texW = item.width || 400;
+    if (!texH) texH = item.height || 300;
     const baseScaleX = item.width / texW;
     const baseScaleY = item.height / texH;
 
@@ -429,6 +528,7 @@ export class ItemManager {
 
   updateTextContent(item, newText) {
     if (item.type !== "text" || !item.textObj) return;
+    this.markItemDirty(item);
     item.text = newText;
     item.textObj.text = newText;
 
@@ -495,8 +595,20 @@ export class ItemManager {
       );
     } else if (item.sprite) {
       const tex = item.sprite.texture;
-      const texW = tex && tex.width > 0 ? tex.width : item.width || 400;
-      const texH = tex && tex.height > 0 ? tex.height : item.height || 300;
+      let texW = tex && tex.width > 0 ? tex.width : 0;
+      let texH = tex && tex.height > 0 ? tex.height : 0;
+      if (item.type === "video") {
+        if (
+          texW <= 1 &&
+          item.videoElement &&
+          item.videoElement.videoWidth > 0
+        ) {
+          texW = item.videoElement.videoWidth;
+          texH = item.videoElement.videoHeight;
+        }
+      }
+      if (!texW) texW = item.width || 400;
+      if (!texH) texH = item.height || 300;
       const baseScaleX = item.width / texW;
       const baseScaleY = item.height / texH;
       item.sprite.scale.set(
@@ -544,17 +656,40 @@ export class ItemManager {
     if (item.container && !item.container.destroyed) {
       item.container.zIndex = item.zIndex;
     }
+    if (
+      this.canvasContainer &&
+      typeof this.canvasContainer.sortChildren === "function"
+    ) {
+      this.canvasContainer.sortChildren();
+    }
     this.notifyChanged();
   }
 
   sendToBack(item) {
     if (!item) return;
-    const minZ = Math.min(
-      ...Array.from(this.items.values()).map((i) => i.zIndex),
-    );
-    item.zIndex = minZ - 1;
+    // Shift all other items up by 1 to maintain monotonic, non-negative z-ordering
+    for (const other of this.items.values()) {
+      if (other.id !== item.id) {
+        other.zIndex += 1;
+        if (other.container && !other.container.destroyed) {
+          other.container.zIndex = other.zIndex;
+        }
+      }
+    }
+    item.zIndex = 0;
     if (item.container && !item.container.destroyed) {
-      item.container.zIndex = item.zIndex;
+      item.container.zIndex = 0;
+    }
+    this.nextZIndex =
+      Math.max(
+        this.nextZIndex,
+        ...Array.from(this.items.values()).map((i) => i.zIndex),
+      ) + 1;
+    if (
+      this.canvasContainer &&
+      typeof this.canvasContainer.sortChildren === "function"
+    ) {
+      this.canvasContainer.sortChildren();
     }
     this.notifyChanged();
   }
@@ -567,10 +702,29 @@ export class ItemManager {
         item.videoElement.pause();
         item.videoElement.src = "";
         item.videoElement.load();
+        item.videoElement.remove();
       } catch (e) {
         console.warn("Error pausing video element:", e);
       }
       item.videoElement = null;
+    }
+
+    if (item.blobUrl) {
+      try {
+        URL.revokeObjectURL(item.blobUrl);
+      } catch (e) {
+        console.warn("Error revoking video blobUrl:", e);
+      }
+      item.blobUrl = null;
+    }
+
+    if (item.animatedSprite) {
+      try {
+        item.animatedSprite.stop();
+      } catch (e) {
+        console.warn("Error stopping animatedSprite:", e);
+      }
+      item.animatedSprite = null;
     }
 
     if (item.container) {
@@ -578,7 +732,11 @@ export class ItemManager {
         if (this.canvasContainer.children.includes(item.container)) {
           this.canvasContainer.removeChild(item.container);
         }
-        item.container.destroy({ children: true });
+        item.container.destroy({
+          children: true,
+          texture: true,
+          textureSource: true,
+        });
       } catch (e) {
         console.warn("Error destroying container:", e);
       }
@@ -991,6 +1149,24 @@ export class ItemManager {
     };
   }
 
+  markAllSaved() {
+    for (const item of this.items.values()) {
+      item.isSaved = true;
+    }
+  }
+
+  markAllDirty() {
+    for (const item of this.items.values()) {
+      item.isSaved = false;
+    }
+  }
+
+  markItemDirty(item) {
+    if (item) {
+      item.isSaved = false;
+    }
+  }
+
   notifyChanged() {
     if (this.onItemsChanged) {
       this.onItemsChanged();
@@ -1002,10 +1178,30 @@ export class ItemManager {
       if (item.videoElement) {
         item.videoElement.pause();
         item.videoElement.src = "";
+        item.videoElement.remove();
+      }
+      if (item.blobUrl) {
+        try {
+          URL.revokeObjectURL(item.blobUrl);
+        } catch {
+          // ignore error
+        }
+        item.blobUrl = null;
+      }
+      if (item.animatedSprite) {
+        try {
+          item.animatedSprite.stop();
+        } catch {
+          // ignore error on stop
+        }
       }
       if (item.container) {
         this.canvasContainer.removeChild(item.container);
-        item.container.destroy({ children: true });
+        item.container.destroy({
+          children: true,
+          texture: true,
+          textureSource: true,
+        });
       }
     }
     this.items.clear();

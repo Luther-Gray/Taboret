@@ -30,6 +30,7 @@ export class BoardViewport {
 
     // Input state
     this.isPanning = false;
+    this.hasPanned = false;
     this.panStartMouse = { x: 0, y: 0 };
     this.panStartTarget = { x: 0, y: 0 };
     this.isSpacePressed = false;
@@ -70,6 +71,11 @@ export class BoardViewport {
 
     this.setupEvents();
     this.setupTicker();
+
+    // Ensure Pixi's shared ticker runs for AnimatedSprite and VideoSource playback
+    if (PIXI.Ticker.shared && !PIXI.Ticker.shared.started) {
+      PIXI.Ticker.shared.start();
+    }
   }
 
   createGrid() {
@@ -135,6 +141,9 @@ export class BoardViewport {
       if (this.isPanning) {
         const dx = e.clientX - this.panStartMouse.x;
         const dy = e.clientY - this.panStartMouse.y;
+        if (Math.hypot(dx, dy) > 4) {
+          this.hasPanned = true;
+        }
         this.panTarget.x = this.panStartTarget.x + dx;
         this.panTarget.y = this.panStartTarget.y + dy;
       }
@@ -157,6 +166,16 @@ export class BoardViewport {
         if (e.button === 2 || e.button === 1 || e.button === 0) {
           this.stopPanning();
         }
+      }
+      if (e.button === 1) {
+        e.preventDefault();
+      }
+    });
+
+    // Prevent default Linux middle-click auto-scroll and primary selection paste
+    this.app.canvas.addEventListener("auxclick", (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
       }
     });
 
@@ -198,6 +217,7 @@ export class BoardViewport {
 
   startPanning(clientX, clientY) {
     this.isPanning = true;
+    this.hasPanned = false;
     this.panStartMouse = { x: clientX, y: clientY };
     this.panStartTarget = { x: this.panTarget.x, y: this.panTarget.y };
     this.updateCursor();
@@ -205,6 +225,9 @@ export class BoardViewport {
 
   stopPanning() {
     this.isPanning = false;
+    setTimeout(() => {
+      this.hasPanned = false;
+    }, 120);
     this.updateCursor();
   }
 
@@ -253,8 +276,14 @@ export class BoardViewport {
 
   updateGridTransform() {
     if (!this.gridSprite) return;
+    // Adaptive power-of-2 LOD grid scaling (Lorien / InfiniPaint parity):
+    // Keeps visual grid cells between ~56px and 113px regardless of zoom level,
+    // while remaining 100% anchored to world coordinates and board items.
+    const logZoom = Math.log2(this.zoom);
+    const snappedZoom = Math.pow(2, Math.round(logZoom));
+    const effectiveScale = this.zoom / snappedZoom;
     this.gridSprite.tilePosition.set(this.pan.x, this.pan.y);
-    this.gridSprite.tileScale.set(this.zoom);
+    this.gridSprite.tileScale.set(effectiveScale, effectiveScale);
   }
 
   screenToCanvas(screenX, screenY) {

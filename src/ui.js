@@ -16,6 +16,8 @@ export class UIManager {
     this.shortcutsModal = null;
     this.toastContainer = null;
     this.textEditorOverlay = null;
+    this.activeProgressToasts = new Set();
+    this.canShowContextMenu = null;
 
     // Callbacks
     this.onNewBoard = null;
@@ -75,6 +77,168 @@ export class UIManager {
     }, 3000);
   }
 
+  showLoadingProgress(title = "Loading...", total = 0) {
+    const toast = document.createElement("div");
+    toast.className = "toast toast-info toast-progress-card";
+    toast.innerHTML = `
+      <div class="toast-progress-header">
+        <span class="toast-progress-title"></span>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="toast-progress-count"></span>
+          <button class="toast-progress-close" title="Dismiss" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1;padding:0;margin:0;">&times;</button>
+        </div>
+      </div>
+      <div class="toast-progress-track">
+        <div class="toast-progress-bar"></div>
+      </div>
+    `;
+    this.toastContainer.appendChild(toast);
+
+    setTimeout(() => {
+      toast.classList.add("toast-show");
+    }, 10);
+
+    const titleEl = toast.querySelector(".toast-progress-title");
+    const countEl = toast.querySelector(".toast-progress-count");
+    const barEl = toast.querySelector(".toast-progress-bar");
+    const closeBtn = toast.querySelector(".toast-progress-close");
+
+    titleEl.textContent = title;
+    countEl.textContent = `0 / ${total}`;
+
+    let lastActivity = Date.now();
+    const stallTimer = setInterval(() => {
+      if (
+        Date.now() - lastActivity > 10000 &&
+        !toast.classList.contains("toast-success") &&
+        !toast.classList.contains("toast-error")
+      ) {
+        titleEl.textContent = "Stalled... (click × to cancel)";
+        toast.classList.remove("toast-info");
+        toast.classList.add("toast-warning");
+      }
+    }, 2500);
+
+    const handle = {
+      update: (current, newTotal, subtitle) => {
+        lastActivity = Date.now();
+        const tot = newTotal !== undefined ? newTotal : total;
+        const pct =
+          tot > 0 ? Math.min(100, Math.round((current / tot) * 100)) : 0;
+        countEl.textContent = `${current} / ${tot}`;
+        barEl.style.width = `${pct}%`;
+        if (subtitle) {
+          titleEl.textContent = subtitle;
+        }
+      },
+      finish: (message = "Finished") => {
+        clearInterval(stallTimer);
+        this.activeProgressToasts.delete(handle);
+        titleEl.textContent = message;
+        countEl.textContent = "Done";
+        barEl.style.width = "100%";
+        barEl.classList.add("toast-progress-done");
+        toast.classList.remove("toast-info", "toast-warning");
+        toast.classList.add("toast-success");
+
+        setTimeout(() => {
+          toast.classList.remove("toast-show");
+          setTimeout(() => toast.remove(), 300);
+        }, 2000);
+      },
+      error: (message = "Failed") => {
+        clearInterval(stallTimer);
+        this.activeProgressToasts.delete(handle);
+        titleEl.textContent = message;
+        toast.classList.remove("toast-info", "toast-warning");
+        toast.classList.add("toast-error");
+        setTimeout(() => {
+          toast.classList.remove("toast-show");
+          setTimeout(() => toast.remove(), 300);
+        }, 3000);
+      },
+      remove: () => {
+        clearInterval(stallTimer);
+        this.activeProgressToasts.delete(handle);
+        toast.classList.remove("toast-show");
+        setTimeout(() => toast.remove(), 300);
+      },
+    };
+
+    closeBtn.onclick = () => handle.remove();
+    this.activeProgressToasts.add(handle);
+    return handle;
+  }
+
+  dismissAllProgress() {
+    if (this.activeProgressToasts) {
+      for (const handle of Array.from(this.activeProgressToasts)) {
+        try {
+          handle.remove();
+        } catch {
+          // ignore error
+        }
+      }
+      this.activeProgressToasts.clear();
+    }
+  }
+
+  showInlineRename(screenX, screenY, width, height, currentTitle, onCommit) {
+    const existing = document.getElementById("inline-group-rename");
+    if (existing) existing.remove();
+
+    const input = document.createElement("input");
+    input.id = "inline-group-rename";
+    input.type = "text";
+    input.value = currentTitle;
+    input.style.position = "fixed";
+    input.style.left = `${Math.max(10, screenX)}px`;
+    input.style.top = `${Math.max(10, screenY)}px`;
+    input.style.width = `${Math.max(100, width)}px`;
+    input.style.height = `${Math.max(24, height)}px`;
+    input.style.zIndex = "10000";
+    input.style.background = "#1e1e24";
+    input.style.color = "#ffffff";
+    input.style.border = "1.5px solid #38bdf8";
+    input.style.borderRadius = "4px";
+    input.style.padding = "2px 8px";
+    input.style.fontSize = "12px";
+    input.style.fontWeight = "bold";
+    input.style.fontFamily = "Inter, sans-serif";
+    input.style.outline = "none";
+    input.style.boxShadow = "0 4px 12px rgba(0,0,0,0.5)";
+
+    document.body.appendChild(input);
+    input.focus();
+    input.select();
+
+    let committed = false;
+    const commit = () => {
+      if (committed) return;
+      committed = true;
+      const val = input.value.trim();
+      input.remove();
+      if (val && val !== currentTitle) {
+        onCommit(val);
+      }
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        committed = true;
+        input.remove();
+      }
+    });
+
+    input.addEventListener("blur", () => {
+      commit();
+    });
+  }
+
   createTopBar() {
     const bar = document.createElement("div");
     bar.className = "top-bar";
@@ -97,15 +261,15 @@ export class UIManager {
       <div class="top-bar-actions">
         <button class="btn btn-icon" id="btnNew" title="New Board (Ctrl+N)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-          <span>New</span>
+          <span>New Board</span>
         </button>
         <button class="btn btn-icon" id="btnOpen" title="Open Board Folder (Ctrl+O)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-          <span>Open Folder</span>
+          <span>Open Board</span>
         </button>
         <button class="btn btn-icon btn-primary" id="btnSave" title="Save Board Folder (Ctrl+S)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-          <span>Save Folder</span>
+          <span>Save Board</span>
         </button>
         <div class="divider"></div>
         <button class="btn btn-icon" id="btnAddMedia" title="Import Local Media (or drag files/links onto canvas)">
@@ -122,7 +286,7 @@ export class UIManager {
           <span>Arrange</span>
         </button>
         <div class="divider"></div>
-        <button class="btn btn-icon" id="btnResetView" title="Frame All References (Z)">
+        <button class="btn btn-icon" id="btnResetView" title="Frame All References (F)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="8" x2="12" y2="16"/></svg>
         </button>
         <button class="btn btn-icon" id="btnShortcuts" title="Keyboard Shortcuts (?)">
@@ -217,8 +381,12 @@ export class UIManager {
         <button class="btn-icon-sm" id="btnAlignBottom" title="Align Bottom edges">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="20" x2="21" y2="20"/><rect x="5" y="4" width="4" height="12" rx="1"/><rect x="15" y="8" width="4" height="8" rx="1"/></svg>
         </button>
-        <button class="btn-icon-sm" id="btnDistributeH" title="Distribute horizontally (3+ items)" style="font-size:11px; letter-spacing:-1px;">⇔ H</button>
-        <button class="btn-icon-sm" id="btnDistributeV" title="Distribute vertically (3+ items)" style="font-size:11px; letter-spacing:-1px;">⇕ V</button>
+        <button class="btn-icon-sm" id="btnDistributeH" title="Distribute Horizontally (3+ items)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="5" width="4" height="14" rx="1"/><rect x="16" y="5" width="4" height="14" rx="1"/><path d="M12 2v20M8 12h8"/></svg>
+        </button>
+        <button class="btn-icon-sm" id="btnDistributeV" title="Distribute Vertically (3+ items)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="4" width="14" height="4" rx="1"/><rect x="5" y="16" width="14" height="4" rx="1"/><path d="M2 12h20M12 8v8"/></svg>
+        </button>
         <button class="btn-icon-sm" id="btnArrangeRow" title="Line up in Row (Arrange Horizontal)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="7" width="5" height="10" rx="1"/><rect x="10" y="7" width="5" height="10" rx="1"/><rect x="17" y="7" width="5" height="10" rx="1"/></svg>
         </button>
@@ -292,6 +460,14 @@ export class UIManager {
       btn.style.pointerEvents = selectedItems.length > 1 ? "auto" : "none";
     }
 
+    // Ungroup button is only enabled when at least one selected item is in a group
+    const hasGrouped = selectedItems.some((i) => i.groupId !== null);
+    const btnUngroup = this.contextBar.querySelector("#btnUngroup");
+    if (btnUngroup) {
+      btnUngroup.style.opacity = hasGrouped ? "1" : "0.4";
+      btnUngroup.style.pointerEvents = hasGrouped ? "auto" : "none";
+    }
+
     // Distribute buttons need 3+ items
     const distributeOnly = this.contextBar.querySelectorAll(
       "#btnDistributeH, #btnDistributeV",
@@ -341,8 +517,12 @@ export class UIManager {
 
   setupGlobalContextMenu() {
     window.addEventListener("contextmenu", (e) => {
-      // If user was panning with right click, don't show browser menu
       e.preventDefault();
+
+      // Suppress context menu if the user was just panning with right click
+      if (this.canShowContextMenu && !this.canShowContextMenu()) {
+        return;
+      }
 
       // Show custom menu if cursor is over items or right clicked
       this.contextMenu.style.left = `${e.clientX}px`;
@@ -416,7 +596,7 @@ export class UIManager {
             <h3>Navigation</h3>
             <div class="shortcut-row"><span>Pan Canvas</span><kbd>Right Drag / Space + Drag</kbd></div>
             <div class="shortcut-row"><span>Zoom to Cursor</span><kbd>Scroll Wheel</kbd></div>
-            <div class="shortcut-row"><span>Frame All</span><kbd>Z</kbd></div>
+            <div class="shortcut-row"><span>Frame All</span><kbd>F / Z</kbd></div>
             
             <h3>Items & Media</h3>
             <div class="shortcut-row"><span>Import Media</span><kbd>Drag & Drop / Ctrl+V</kbd></div>

@@ -37,6 +37,7 @@ export class InteractionController {
     this.onSelectionChanged = null;
     this.onTextEditRequested = null;
     this.onNotification = null;
+    this.onProgress = null;
 
     this.setupMouseEvents();
     this.setupKeyEvents();
@@ -144,7 +145,7 @@ export class InteractionController {
         this.activeGizmoAction &&
         (this.gizmoItemStartState || this.gizmoMultiStartState)
       ) {
-        this.handleGizmoDrag(canvasPos);
+        this.handleGizmoDrag(canvasPos, e.shiftKey);
         return;
       }
 
@@ -232,12 +233,32 @@ export class InteractionController {
       const canvasPos = this.viewport.screenToCanvas(e.clientX, e.clientY);
       const hitGroup = this.itemManager.hitTestGroupTab(canvasPos);
       if (hitGroup) {
+        const tab = hitGroup.bounds.tab;
+        const screenPos = this.viewport.canvasToScreen(tab.x, tab.y);
+        const screenW = tab.width * this.viewport.zoom;
+        const screenH = tab.height * this.viewport.zoom;
         const currentTitle = hitGroup.group.title || "Group";
-        const newTitle = window.prompt("Rename group:", currentTitle);
-        if (newTitle !== null && newTitle.trim() !== "") {
-          hitGroup.group.title = newTitle.trim();
-          this.itemManager.updateGroupDisplay();
-          this.itemManager.notifyChanged();
+
+        if (this.onGroupRenameRequested) {
+          this.onGroupRenameRequested(
+            screenPos.x,
+            screenPos.y,
+            screenW,
+            screenH,
+            currentTitle,
+            (newTitle) => {
+              hitGroup.group.title = newTitle;
+              this.itemManager.updateGroupDisplay();
+              this.itemManager.notifyChanged();
+            },
+          );
+        } else {
+          const newTitle = window.prompt("Rename group:", currentTitle);
+          if (newTitle !== null && newTitle.trim() !== "") {
+            hitGroup.group.title = newTitle.trim();
+            this.itemManager.updateGroupDisplay();
+            this.itemManager.notifyChanged();
+          }
         }
         return;
       }
@@ -450,22 +471,45 @@ export class InteractionController {
     }
 
     const b = this.itemManager.getItemBounds(item);
-    this.selectionBounds = { ...b };
+    this.selectionBounds = { ...b, item };
 
-    // Outer bounding border
-    this.gizmoGraphics.rect(b.x, b.y, b.width, b.height);
+    const rot = item.rotation || 0;
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    const hw = (item.width * item.scaleX) / 2;
+    const hh = (item.height * item.scaleY) / 2;
+
+    // Helper to rotate local box coordinates into world space centered at item
+    const toWorld = (lx, ly) => ({
+      x: item.x + (lx * cos - ly * sin),
+      y: item.y + (lx * sin + ly * cos),
+    });
+
+    const tl = toWorld(-hw, -hh);
+    const tr = toWorld(hw, -hh);
+    const br = toWorld(hw, hh);
+    const bl = toWorld(-hw, hh);
+
+    // Rotated outer bounding polygon
+    this.gizmoGraphics.poly([
+      tl.x,
+      tl.y,
+      tr.x,
+      tr.y,
+      br.x,
+      br.y,
+      bl.x,
+      bl.y,
+      tl.x,
+      tl.y,
+    ]);
     this.gizmoGraphics.stroke({
       color: 0x38bdf8,
       width: 2 / this.viewport.zoom,
     });
 
     // 4 Corner handles
-    const corners = [
-      { x: b.x, y: b.y }, // TL
-      { x: b.x + b.width, y: b.y }, // TR
-      { x: b.x + b.width, y: b.y + b.height }, // BR
-      { x: b.x, y: b.y + b.height }, // BL
-    ];
+    const corners = [tl, tr, br, bl];
 
     for (const pt of corners) {
       this.gizmoGraphics.rect(
@@ -481,46 +525,63 @@ export class InteractionController {
       });
     }
 
-    // Rotation handle
-    const topCenterX = b.x + b.width / 2;
-    const topCenterY = b.y;
-    const rotY = topCenterY - rotateOffset;
+    // Rotated rotation handle at midpoint of top edge
+    const topCenter = toWorld(0, -hh);
+    const rotHandle = toWorld(0, -hh - rotateOffset);
 
     // Stem line
-    this.gizmoGraphics.moveTo(topCenterX, topCenterY);
-    this.gizmoGraphics.lineTo(topCenterX, rotY);
+    this.gizmoGraphics.moveTo(topCenter.x, topCenter.y);
+    this.gizmoGraphics.lineTo(rotHandle.x, rotHandle.y);
     this.gizmoGraphics.stroke({
       color: 0x38bdf8,
       width: 1.5 / this.viewport.zoom,
     });
 
     // Rotation circle
-    this.gizmoGraphics.circle(topCenterX, rotY, handleSize / 1.5);
-    this.gizmoGraphics.fill({ color: 0x38bdf8 });
+    this.gizmoGraphics.circle(rotHandle.x, rotHandle.y, handleSize / 1.5);
+    this.gizmoGraphics.fill({ color: 0xffffff });
     this.gizmoGraphics.stroke({
-      color: 0xffffff,
+      color: 0x0284c7,
       width: 1.5 / this.viewport.zoom,
     });
   }
 
   hitTestGizmoHandles(canvasPos) {
     if (!this.selectionBounds || this.selectedItems.size === 0) return null;
-    const b = this.selectionBounds;
     const threshold = 16 / this.viewport.zoom;
     const rotateOffset = 30 / this.viewport.zoom;
 
-    // Rotation handle (single item only)
+    // Single item: hit-test in item's local rotated coordinate space
     if (this.selectedItems.size === 1) {
-      const topCenterX = b.x + b.width / 2;
-      const rotY = b.y - rotateOffset;
-      if (
-        Math.hypot(canvasPos.x - topCenterX, canvasPos.y - rotY) <= threshold
-      ) {
+      const item = Array.from(this.selectedItems)[0];
+      const rot = item.rotation || 0;
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const hw = (item.width * item.scaleX) / 2;
+      const hh = (item.height * item.scaleY) / 2;
+
+      // Unrotate canvasPos into local space centered at item
+      const dx = canvasPos.x - item.x;
+      const dy = canvasPos.y - item.y;
+      const lx = dx * cos + dy * sin;
+      const ly = -dx * sin + dy * cos;
+
+      // Rotation handle at (0, -hh - rotateOffset)
+      if (Math.hypot(lx, ly - (-hh - rotateOffset)) <= threshold) {
         return "rotate";
       }
+
+      // Corner handles: TL, TR, BR, BL
+      if (Math.hypot(lx - -hw, ly - -hh) <= threshold) return "scale-tl";
+      if (Math.hypot(lx - hw, ly - -hh) <= threshold) return "scale-tr";
+      if (Math.hypot(lx - hw, ly - hh) <= threshold) return "scale-br";
+      if (Math.hypot(lx - -hw, ly - hh) <= threshold) return "scale-bl";
+
+      return null;
     }
 
-    // Corner handles
+    // Multi-selection: axis-aligned bounding box handles
+    const b = this.selectionBounds;
     if (Math.hypot(canvasPos.x - b.x, canvasPos.y - b.y) <= threshold)
       return "scale-tl";
     if (
@@ -545,7 +606,7 @@ export class InteractionController {
   getCursorForHandle(handle) {
     switch (handle) {
       case "rotate":
-        return "crosshair";
+        return "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67' stroke='%23000' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67' stroke='%2338bdf8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\") 12 12, grab";
       case "scale-tl":
       case "scale-br":
         return "nwse-resize";
@@ -563,6 +624,10 @@ export class InteractionController {
 
     if (this.selectedItems.size === 1) {
       const item = Array.from(this.selectedItems)[0];
+      const startAngle = Math.atan2(
+        mouseCanvasPos.y - item.y,
+        mouseCanvasPos.x - item.x,
+      );
       this.gizmoItemStartState = {
         x: item.x,
         y: item.y,
@@ -571,6 +636,7 @@ export class InteractionController {
         scaleX: item.scaleX,
         scaleY: item.scaleY,
         rotation: item.rotation,
+        startAngle,
         itemBounds: this.itemManager.getItemBounds(item),
       };
       this.gizmoMultiStartState = null;
@@ -606,7 +672,7 @@ export class InteractionController {
     }
   }
 
-  handleGizmoDrag(currentPos) {
+  handleGizmoDrag(currentPos, shiftKey = false) {
     if (this.gizmoMultiStartState) {
       const { pivot, initialDist, items } = this.gizmoMultiStartState;
       if (initialDist <= 0) return;
@@ -637,9 +703,17 @@ export class InteractionController {
     const start = this.gizmoItemStartState;
 
     if (this.activeGizmoAction === "rotate") {
-      const angle = Math.atan2(currentPos.y - item.y, currentPos.x - item.x);
-      // Snap to 45 degree increments if shift is pressed
-      let finalAngle = angle + Math.PI / 2;
+      const currentAngle = Math.atan2(
+        currentPos.y - item.y,
+        currentPos.x - item.x,
+      );
+      const deltaAngle = currentAngle - start.startAngle;
+      let finalAngle = start.rotation + deltaAngle;
+      if (shiftKey) {
+        // Snap to 15-degree increments when Shift is held
+        const step = Math.PI / 12;
+        finalAngle = Math.round(finalAngle / step) * step;
+      }
       this.itemManager.setItemRotation(item, finalAngle);
       this.updateGizmo();
       return;
@@ -715,7 +789,7 @@ export class InteractionController {
       }
 
       // Flip Horizontal: H
-      if (e.key.toLowerCase() === "h" && !e.ctrlKey) {
+      if (e.key.toLowerCase() === "h" && !e.ctrlKey && !e.metaKey) {
         for (const item of this.selectedItems) {
           this.itemManager.flipItemHorizontal(item);
         }
@@ -723,8 +797,8 @@ export class InteractionController {
         return;
       }
 
-      // Flip Vertical: V
-      if (e.key.toLowerCase() === "v" && !e.ctrlKey) {
+      // Flip Vertical: V (guarded against Cmd+V on macOS)
+      if (e.key.toLowerCase() === "v" && !e.ctrlKey && !e.metaKey) {
         for (const item of this.selectedItems) {
           this.itemManager.flipItemVertical(item);
         }
@@ -747,7 +821,7 @@ export class InteractionController {
       }
 
       // Add Text: T
-      if (e.key.toLowerCase() === "t" && !e.ctrlKey) {
+      if (e.key.toLowerCase() === "t" && !e.ctrlKey && !e.metaKey) {
         const center = this.viewport.screenToCanvas(
           this.viewport.app.screen.width / 2,
           this.viewport.app.screen.height / 2,
@@ -761,8 +835,12 @@ export class InteractionController {
         return;
       }
 
-      // Reset View / Frame All: Z
-      if (e.key.toLowerCase() === "z" && !e.ctrlKey) {
+      // Reset View / Frame All: F (BeeRef standard) or Z
+      if (
+        (e.key.toLowerCase() === "f" || e.key.toLowerCase() === "z") &&
+        !e.ctrlKey &&
+        !e.metaKey
+      ) {
         const bounds = this.itemManager.getOverallBounds();
         this.viewport.resetView(bounds);
         return;
@@ -868,33 +946,68 @@ export class InteractionController {
     const maxCols = Math.ceil(Math.sqrt(files.length));
     let col = 0;
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      try {
-        const media = await readLocalFile(file);
-        const isVideo =
-          media.mimeType?.startsWith("video/") ||
-          /\.(mp4|webm)$/i.test(media.filename);
+    const progress =
+      files.length > 1 && this.onProgress
+        ? this.onProgress(`Importing ${files.length} items...`, files.length)
+        : null;
 
-        let item;
-        if (isVideo) {
-          try {
-            item = await this.itemManager.addVideoItem(
-              {
-                dataUrl: media.dataUrl,
-                filename: `media/${media.filename}`,
-                sourcePath: media.sourcePath,
-                x: curX,
-                y: curY,
-              },
-              { skipNotify: true },
-            );
-          } catch (vidErr) {
-            console.warn("Video import failed, falling back to image:", vidErr);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const displayName =
+          typeof file === "string"
+            ? file.split(/[/\\]/).pop()
+            : file?.name || `Item ${i + 1}`;
+
+        if (progress) {
+          progress.update(i, files.length, `Importing "${displayName}"...`);
+        }
+
+        try {
+          const media = await readLocalFile(file);
+          const isVideo =
+            media.mimeType?.startsWith("video/") ||
+            /\.(mp4|webm)$/i.test(media.filename);
+
+          const safeFilename = `media/${Date.now()}_${media.filename
+            .replace(/^[/\\]+/, "")
+            .split(/[/\\]/)
+            .pop()}`;
+
+          let item;
+          if (isVideo) {
+            try {
+              item = await this.itemManager.addVideoItem(
+                {
+                  dataUrl: media.dataUrl,
+                  filename: safeFilename,
+                  sourcePath: media.sourcePath,
+                  x: curX,
+                  y: curY,
+                },
+                { skipNotify: true },
+              );
+            } catch (vidErr) {
+              console.warn(
+                "Video import failed, falling back to image:",
+                vidErr,
+              );
+              item = await this.itemManager.addImageItem(
+                {
+                  dataUrl: media.dataUrl,
+                  filename: safeFilename,
+                  sourcePath: media.sourcePath,
+                  x: curX,
+                  y: curY,
+                },
+                { skipNotify: true },
+              );
+            }
+          } else {
             item = await this.itemManager.addImageItem(
               {
                 dataUrl: media.dataUrl,
-                filename: `media/${media.filename}`,
+                filename: safeFilename,
                 sourcePath: media.sourcePath,
                 x: curX,
                 y: curY,
@@ -902,46 +1015,46 @@ export class InteractionController {
               { skipNotify: true },
             );
           }
-        } else {
-          item = await this.itemManager.addImageItem(
-            {
-              dataUrl: media.dataUrl,
-              filename: `media/${media.filename}`,
-              sourcePath: media.sourcePath,
-              x: curX,
-              y: curY,
-            },
-            { skipNotify: true },
+
+          importedItems.push(item);
+          const b = this.itemManager.getItemBounds(item);
+          curX += b.width + spacing;
+          rowMaxH = Math.max(rowMaxH, b.height);
+          col++;
+
+          if (col >= maxCols) {
+            col = 0;
+            curX = dropPos.x;
+            curY += rowMaxH + spacing;
+            rowMaxH = 0;
+          }
+
+          if (progress) {
+            progress.update(
+              i + 1,
+              files.length,
+              `Imported "${displayName}" (${i + 1}/${files.length})`,
+            );
+          }
+
+          // Yield to browser event loop between batch items
+          if (files.length > 1) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        } catch (err) {
+          if (progress) {
+            progress.update(i + 1, files.length);
+          }
+          console.error(`Detailed error importing file "${displayName}":`, err);
+          this.notify(
+            `Failed importing ${displayName}: ${err?.message || "Invalid or unsupported media"}`,
+            "error",
           );
         }
-
-        importedItems.push(item);
-        const b = this.itemManager.getItemBounds(item);
-        curX += b.width + spacing;
-        rowMaxH = Math.max(rowMaxH, b.height);
-        col++;
-
-        if (col >= maxCols) {
-          col = 0;
-          curX = dropPos.x;
-          curY += rowMaxH + spacing;
-          rowMaxH = 0;
-        }
-
-        // Yield to browser event loop between batch items
-        // Gives WebKitGTK and Mesa EGL a chance to flush texture uploads,
-        // release Base64 memory buffers, and prevent EGL context exhaustion.
-        if (files.length > 1) {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-      } catch (err) {
-        const name =
-          typeof file === "string" ? file.split("/").pop() : file?.name;
-        console.error(`Detailed error importing file "${name}":`, err);
-        this.notify(
-          `Failed importing ${name}: ${err?.message || "Invalid or unsupported media"}`,
-          "error",
-        );
+      }
+    } finally {
+      if (progress) {
+        progress.finish(`Imported ${importedItems.length} items`);
       }
     }
 
@@ -1118,7 +1231,39 @@ export class InteractionController {
 
   // ---------------- CLIPBOARD PASTE ----------------
   setupClipboardPaste() {
+    let lastMiddleClickTime = 0;
+    window.addEventListener(
+      "mousedown",
+      (e) => {
+        if (e.button === 1) lastMiddleClickTime = Date.now();
+      },
+      true,
+    );
+    window.addEventListener(
+      "mouseup",
+      (e) => {
+        if (e.button === 1) lastMiddleClickTime = Date.now();
+      },
+      true,
+    );
+    window.addEventListener(
+      "auxclick",
+      (e) => {
+        if (e.button === 1) {
+          lastMiddleClickTime = Date.now();
+          e.preventDefault();
+        }
+      },
+      true,
+    );
+
     window.addEventListener("paste", async (e) => {
+      // Prevent Linux primary-selection paste on middle click / panning
+      if (this.viewport.isPanning || Date.now() - lastMiddleClickTime < 450) {
+        e.preventDefault();
+        return;
+      }
+
       // Ignore if editing text
       const target = e.target;
       if (

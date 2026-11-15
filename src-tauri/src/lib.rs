@@ -106,7 +106,12 @@ fn save_board_to_folder(folder_path: String, board_json: String, media_files: Ve
         .map_err(|e| format!("Failed to write board.json: {}", e))?;
 
     for item in media_files {
-        let dest_file = media_dir.join(&item.filename);
+        // Prevent path traversal from malicious or malformed filenames (e.g. "../" or absolute paths)
+        let clean_filename = Path::new(&item.filename)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| item.filename.clone());
+        let dest_file = media_dir.join(&clean_filename);
 
         if let Some(src) = item.source_path {
             let src_path = PathBuf::from(src);
@@ -343,9 +348,12 @@ fn get_mime_from_extension(path: &Path) -> String {
         "webp" => "image/webp".into(),
         "gif" => "image/gif".into(),
         "svg" => "image/svg+xml".into(),
+        "avif" => "image/avif".into(),
         "mp4" => "video/mp4".into(),
+        "mov" => "video/quicktime".into(),
+        "m4v" => "video/x-m4v".into(),
         "webm" => "video/webm".into(),
-        "ogg" => "video/ogg".into(),
+        "ogg" | "ogv" => "video/ogg".into(),
         _ => "application/octet-stream".into(),
     }
 }
@@ -357,10 +365,14 @@ fn extension_from_mime(mime: &str) -> &'static str {
         "gif"
     } else if mime.contains("webp") {
         "webp"
+    } else if mime.contains("avif") {
+        "avif"
     } else if mime.contains("svg") {
         "svg"
     } else if mime.contains("mp4") {
         "mp4"
+    } else if mime.contains("quicktime") {
+        "mov"
     } else if mime.contains("webm") {
         "webm"
     } else {
