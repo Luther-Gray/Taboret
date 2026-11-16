@@ -79,6 +79,9 @@
 - **Fix path**: Prompt for board name first (via inline modal/input), then auto-create `${parentFolder}/${boardName}/`.
 - **Priority**: Low.
 
+### 🟡 Item Controls are not always in front of all objects
+- **Issue**: When an item is selected on the canvas, the resize and rotate controls for that item are not ontop of all other items.
+
 ---
 
 ## TODO: Video Playback (Postponed for Dedicated Session)
