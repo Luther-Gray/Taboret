@@ -6,7 +6,7 @@ Taboret is a well featured and fast Reference Board for Linux, running on PixiJS
 
 ### Features
 
-- Infinite Canvas
+- Infinite Canvas with support for a massive amount of images
 - Local File Storage with no weird formats
 - Text
 - Move, Scale, Rotate & Flip Images
@@ -14,7 +14,7 @@ Taboret is a well featured and fast Reference Board for Linux, running on PixiJS
 - Mass Arrange Options
 - GIF & WEBM Support
 
-![Banner2]()
+![Banner2](https://github.com/Luther-Gray/Taboret/blob/main/readme_images/Demo.png)
 
 ### Planned Features
 - Video (MP4) Support
