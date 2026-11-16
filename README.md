@@ -2,7 +2,7 @@ Taboret is a well featured and fast Reference Board for Linux, running on PixiJS
 
 ---
 
-![Banner1]()
+![Banner1](https://github.com/Luther-Gray/Taboret/blob/main/readme_images/InfiniteCanvas.png)
 
 ### Features
 
